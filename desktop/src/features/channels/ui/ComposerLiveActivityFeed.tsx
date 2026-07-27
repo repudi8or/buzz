@@ -63,7 +63,7 @@ export function ComposerLiveActivityFeed({
     >
       <button
         aria-label={openLabel}
-        className="absolute inset-0 z-10 cursor-pointer rounded-lg transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className="absolute inset-0 z-10 cursor-pointer rounded-[inherit] transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         data-testid="composer-live-activity-open"
         onClick={() => onOpenAgentSession(agent.pubkey)}
         type="button"

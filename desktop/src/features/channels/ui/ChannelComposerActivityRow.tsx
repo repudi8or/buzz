@@ -54,7 +54,6 @@ export function ChannelComposerActivityRow({
               onOpenAgentSession={onOpenAgentSession}
               openAgentSessionPubkey={openAgentSessionPubkey}
               profiles={profiles}
-              variant="inline"
               workingBotPubkeys={workingBotPubkeys}
             />
           </div>

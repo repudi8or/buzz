@@ -2015,13 +2015,15 @@ test("shows and clears activity indicators for active channel agents", async ({
   await expect(
     page.getByTestId("bot-activity-composer-trigger"),
   ).not.toContainText("View activity");
-  await page.getByTestId("bot-activity-composer-trigger").click();
+  // Hovering the pill opens the preview popover with the activity item.
+  await page.getByTestId("bot-activity-composer-trigger").hover();
   const aliceActivityItem = page.getByTestId(
     `bot-activity-composer-item-${TEST_IDENTITIES.alice.pubkey}`,
   );
   await expect(aliceActivityItem).toBeVisible();
   await expect(aliceActivityItem).toContainText("View activity");
-  await aliceActivityItem.click({ force: true });
+  // Clicking the pill itself opens the agent's runtime in the aux panel.
+  await page.getByTestId("bot-activity-composer-trigger").click();
   await expect(page.getByTestId("agent-session-thread-panel")).toBeVisible();
   await expect(page.getByTestId("agent-session-thread-panel")).toContainText(
     "alice",

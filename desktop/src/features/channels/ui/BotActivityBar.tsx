@@ -2,21 +2,16 @@ import * as React from "react";
 import { Loader2 } from "lucide-react";
 
 import { useAgentTranscript } from "@/features/agents/ui/useObserverEvents";
-import {
-  getActivityHeadline,
-  isMeaningfulItem,
-  isSpineItem,
-} from "@/features/agents/ui/agentSessionTranscriptPresentation";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { ManagedAgent } from "@/shared/api/types";
 import { useFeatureEnabled } from "@/shared/features";
 import { cn } from "@/shared/lib/cn";
-import { Button } from "@/shared/ui/button";
+import { useNow } from "@/shared/lib/useNow";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Shimmer } from "@/shared/ui/Shimmer";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { ComposerLiveActivityFeed } from "./ComposerLiveActivityFeed";
-import { resolveSelectedActivityAgent } from "./composerLiveActivity";
+import { deriveActivityPillLabel } from "./composerLiveActivity";
 
 export type BotActivityAgent = Pick<ManagedAgent, "pubkey" | "name" | "status">;
 
@@ -27,100 +22,21 @@ type BotActivityBarProps = {
   openAgentSessionPubkey: string | null;
   profiles?: UserProfileLookup;
   workingBotPubkeys: string[];
-  variant?: "toolbar" | "inline";
 };
 
 const HOVER_OPEN_DELAY_MS = 150;
 const HOVER_CLOSE_DELAY_MS = 180;
-const HEADLINE_ROTATION_MS = 2200;
+/** Re-render cadence for the pill label's staleness check. */
+const PILL_LABEL_TICK_MS = 5_000;
+/** Shown when no fresh action headline exists (see deriveActivityPillLabel). */
+const GENERIC_WORKING_LABEL = "Working…";
 
-export function BotActivityComposerAction({
-  agents,
-  channelId = null,
-  onOpenAgentSession,
-  openAgentSessionPubkey,
-  profiles,
-  workingBotPubkeys,
-  variant = "toolbar",
-}: BotActivityBarProps) {
+/** Hover-intent popover state shared by every activity pill. */
+function useHoverPopover() {
   const [open, setOpen] = React.useState(false);
-  const liveActivityEnabled = useFeatureEnabled("composerLiveActivity");
-  // Which working agent's feed the live-activity preview shows. Explicit tab
-  // selection first; falls back to the open session pane, then the first
-  // working agent (see resolveSelectedActivityAgent).
-  const [selectedActivityPubkey, setSelectedActivityPubkey] = React.useState<
-    string | null
-  >(null);
   const hoverTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-
-  const workingAgents = React.useMemo(() => {
-    const workingSet = new Set(
-      workingBotPubkeys.map((pubkey) => pubkey.toLowerCase()),
-    );
-
-    return agents.filter((agent) => workingSet.has(agent.pubkey.toLowerCase()));
-  }, [agents, workingBotPubkeys]);
-  const singleWorkingAgent =
-    workingAgents.length === 1 ? (workingAgents[0] ?? null) : null;
-  const selectedActivityAgent = React.useMemo(
-    () =>
-      liveActivityEnabled
-        ? resolveSelectedActivityAgent({
-            openAgentSessionPubkey,
-            selectedPubkey: selectedActivityPubkey,
-            workingAgents,
-          })
-        : null,
-    [
-      liveActivityEnabled,
-      openAgentSessionPubkey,
-      selectedActivityPubkey,
-      workingAgents,
-    ],
-  );
-  const transcript = useAgentTranscript(
-    Boolean(singleWorkingAgent),
-    singleWorkingAgent?.pubkey,
-  );
-  const activityHeadlines = React.useMemo(() => {
-    if (!singleWorkingAgent) {
-      return [];
-    }
-
-    const seen = new Set<string>();
-    const headlines: string[] = [];
-    const scopedTranscript = channelId
-      ? transcript.filter((item) => item.channelId === channelId)
-      : transcript;
-
-    // Two-tier scan: spine items first (reads recede when real work is present).
-    // If no spine headlines are found (session start / idle), fall back to all
-    // meaningful items so the bar isn't left empty.
-    const passFilter: (item: (typeof scopedTranscript)[number]) => boolean =
-      scopedTranscript.some(isSpineItem) ? isSpineItem : isMeaningfulItem;
-
-    for (let i = scopedTranscript.length - 1; i >= 0; i--) {
-      const item = scopedTranscript[i];
-      if (!passFilter(item)) {
-        continue;
-      }
-      const headline = getActivityHeadline(item);
-      if (!headline || seen.has(headline)) {
-        continue;
-      }
-
-      seen.add(headline);
-      headlines.unshift(headline);
-      if (headlines.length >= 5) {
-        break;
-      }
-    }
-
-    return headlines;
-  }, [channelId, singleWorkingAgent, transcript]);
-  const [headlineIndex, setHeadlineIndex] = React.useState(0);
 
   const clearHoverTimer = React.useCallback(() => {
     if (hoverTimerRef.current !== null) {
@@ -143,217 +59,177 @@ export function BotActivityComposerAction({
     }, HOVER_CLOSE_DELAY_MS);
   }, [clearHoverTimer]);
 
-  const keepOpen = React.useCallback(() => {
-    clearHoverTimer();
-  }, [clearHoverTimer]);
-
   React.useEffect(() => {
     return () => clearHoverTimer();
   }, [clearHoverTimer]);
 
-  React.useEffect(() => {
-    if (activityHeadlines.length <= 1) {
-      return;
-    }
+  return { clearHoverTimer, closeWithDelay, open, openWithDelay, setOpen };
+}
 
-    const interval = window.setInterval(() => {
-      setHeadlineIndex((current) => (current + 1) % activityHeadlines.length);
-    }, HEADLINE_ROTATION_MS);
+/**
+ * One working agent's status pill: avatar + the agent's latest action summary
+ * (decaying to a generic working label when activity goes quiet). Hovering
+ * shows the agent's live activity feed as the popover surface itself — flat,
+ * no inset box, no tab strip — while clicking the pill opens the agent's full
+ * runtime in the auxiliary panel. With the `composerLiveActivity` preview
+ * flag off, the hover popover keeps the legacy "View activity" item instead.
+ */
+function BotActivityAgentPill({
+  agent,
+  avatarUrl,
+  channelId,
+  liveActivityEnabled,
+  onOpenAgentSession,
+  openAgentSessionPubkey,
+  profiles,
+}: {
+  agent: BotActivityAgent;
+  avatarUrl: string | null;
+  channelId: string | null;
+  liveActivityEnabled: boolean;
+  onOpenAgentSession: (pubkey: string, channelId?: string | null) => void;
+  openAgentSessionPubkey: string | null;
+  profiles?: UserProfileLookup;
+}) {
+  const { clearHoverTimer, closeWithDelay, open, openWithDelay, setOpen } =
+    useHoverPopover();
+  const transcript = useAgentTranscript(true, agent.pubkey);
+  const now = useNow(PILL_LABEL_TICK_MS);
+  const headline = React.useMemo(
+    () => deriveActivityPillLabel({ channelId, now, transcript }),
+    [channelId, now, transcript],
+  );
+  const label = headline ?? GENERIC_WORKING_LABEL;
+  const isSessionOpen =
+    openAgentSessionPubkey?.toLowerCase() === agent.pubkey.toLowerCase();
 
-    return () => window.clearInterval(interval);
-  }, [activityHeadlines.length]);
-
-  if (workingAgents.length === 0) {
-    return null;
-  }
-
-  const agentAvatarUrl = (agent: BotActivityAgent) =>
-    profiles?.[agent.pubkey.toLowerCase()]?.avatarUrl ?? null;
-  const selectedPubkey = openAgentSessionPubkey?.toLowerCase() ?? null;
-  const triggerLabel =
-    workingAgents.length === 1
-      ? `${workingAgents[0]?.name ?? "Agent"} is working`
-      : `${workingAgents.length} agents working`;
-  const isInline = variant === "inline";
-  const visibleStatusLabel =
-    workingAgents.length === 1
-      ? `${workingAgents[0]?.name ?? "Agent"}: ${
-          activityHeadlines[headlineIndex % activityHeadlines.length] ??
-          "Working"
-        }`
-      : `${workingAgents[0]?.name ?? "Agent"} +${workingAgents.length - 1}`;
+  const openSession = () => {
+    clearHoverTimer();
+    setOpen(false);
+    onOpenAgentSession(agent.pubkey, channelId);
+  };
 
   return (
     <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>
         <button
-          aria-label={`${triggerLabel}. View activity.`}
-          className={cn(
-            "inline-flex items-center justify-center rounded-full border border-border/60 bg-background font-medium text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:border-primary/40 data-[state=open]:bg-primary/10 data-[state=open]:text-primary",
-            isInline
-              ? "min-w-0 gap-1.5 overflow-visible border-transparent bg-transparent px-0 text-xs font-normal leading-normal shadow-none hover:border-transparent hover:bg-transparent data-[state=open]:border-transparent data-[state=open]:bg-transparent"
-              : "h-9 min-w-9 gap-1.5 px-2 text-xs",
-          )}
+          aria-label={`${agent.name} is working. View activity.`}
+          className="inline-flex h-7 min-w-0 max-w-30 items-center gap-1.5 rounded-full border border-border/60 bg-background px-2 text-xs font-semibold leading-none text-muted-foreground shadow-xs transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:border-primary/40 data-[state=open]:bg-primary/10 data-[state=open]:text-primary"
           data-testid="bot-activity-composer-trigger"
           onBlur={closeWithDelay}
-          onClick={() => {
-            clearHoverTimer();
-            setOpen((current) => !current);
+          onClick={(event) => {
+            // The popover is a hover preview; clicking goes straight to the
+            // agent's runtime in the aux panel. preventDefault stops Radix's
+            // composed trigger toggle from fighting over the popover state.
+            event.preventDefault();
+            openSession();
           }}
           onFocus={() => setOpen(true)}
           onMouseEnter={openWithDelay}
           onMouseLeave={closeWithDelay}
           type="button"
         >
-          <span className="flex h-4.5 items-center overflow-visible -space-x-1">
-            {workingAgents.slice(0, 2).map((agent) => (
-              <UserAvatar
-                avatarUrl={agentAvatarUrl(agent)}
-                className={cn(
-                  "border border-background",
-                  isInline ? "!h-4.5 !w-4.5 text-3xs" : "shrink-0",
-                )}
-                displayName={agent.name}
-                fallbackDelayMs={isInline ? 0 : undefined}
-                key={agent.pubkey}
-                size="xs"
-              />
-            ))}
+          <UserAvatar
+            avatarUrl={avatarUrl}
+            className="!h-[18px] !w-[18px] shrink-0 text-3xs"
+            displayName={agent.name}
+            size="xs"
+          />
+          <span className="min-w-0 flex-1 overflow-hidden">
+            <Shimmer className="block truncate">{label}</Shimmer>
           </span>
-          {workingAgents.length > 2 ? (
-            <span className="text-2xs leading-none">
-              +{workingAgents.length - 2}
-            </span>
-          ) : null}
-          <span
-            className={cn(
-              isInline
-                ? "flex h-4.5 min-w-0 flex-1 items-center overflow-visible leading-none"
-                : "sr-only",
-            )}
-          >
-            {isInline ? (
-              <Shimmer className="-my-px truncate py-px">
-                {visibleStatusLabel}
-              </Shimmer>
-            ) : (
-              "working"
-            )}
-          </span>
-          {isInline ? null : (
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin opacity-70" />
-          )}
         </button>
       </PopoverTrigger>
       <PopoverContent
-        align={isInline ? "start" : "end"}
+        align="start"
         className={cn(
-          liveActivityEnabled ? "flex w-80 flex-col gap-1.5 p-2" : "w-64 p-1",
+          liveActivityEnabled ? "w-80 overflow-hidden p-0" : "w-64 p-1",
         )}
-        onMouseEnter={keepOpen}
+        onMouseEnter={clearHoverTimer}
         onMouseLeave={closeWithDelay}
         onOpenAutoFocus={(event) => event.preventDefault()}
         side="top"
         sideOffset={8}
       >
         {liveActivityEnabled ? (
-          <>
-            {selectedActivityAgent ? (
-              <ComposerLiveActivityFeed
-                agent={selectedActivityAgent}
-                channelId={channelId}
-                className="h-48 rounded-lg border border-border/60 bg-background"
-                onOpenAgentSession={(pubkey) => {
-                  clearHoverTimer();
-                  setOpen(false);
-                  onOpenAgentSession(pubkey, channelId);
-                }}
-                profiles={profiles}
-              />
-            ) : null}
-            <div
-              aria-label="Working agents"
-              className="flex w-full flex-wrap items-center justify-start gap-1.5"
-              role="tablist"
-            >
-              {workingAgents.map((agent) => {
-                const isSelected =
-                  selectedActivityAgent?.pubkey.toLowerCase() ===
-                  agent.pubkey.toLowerCase();
-
-                return (
-                  <Button
-                    aria-selected={isSelected}
-                    className="max-w-full shrink-0 rounded-full px-2"
-                    data-testid={`bot-activity-composer-item-${agent.pubkey}`}
-                    key={agent.pubkey}
-                    onClick={() =>
-                      setSelectedActivityPubkey(agent.pubkey.toLowerCase())
-                    }
-                    role="tab"
-                    size="sm"
-                    type="button"
-                    variant={isSelected ? "secondary" : "ghost"}
-                  >
-                    <UserAvatar
-                      avatarUrl={agentAvatarUrl(agent)}
-                      className="!h-[18px] !w-[18px] shrink-0 text-3xs"
-                      displayName={agent.name}
-                      size="xs"
-                    />
-                    <span className="max-w-28 truncate">{agent.name}</span>
-                  </Button>
-                );
-              })}
-            </div>
-          </>
+          <ComposerLiveActivityFeed
+            agent={agent}
+            channelId={channelId}
+            className="h-48 rounded-[inherit]"
+            onOpenAgentSession={() => openSession()}
+            profiles={profiles}
+          />
         ) : (
-          <>
-            <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
-              Agents working
-            </div>
-            <div className="mt-1 flex flex-col gap-1">
-              {workingAgents.map((agent) => {
-                const isSelected =
-                  selectedPubkey === agent.pubkey.toLowerCase();
-
-                return (
-                  <button
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
-                      isSelected
-                        ? "bg-primary/10 text-primary"
-                        : "text-foreground hover:bg-accent hover:text-accent-foreground",
-                    )}
-                    data-testid={`bot-activity-composer-item-${agent.pubkey}`}
-                    key={agent.pubkey}
-                    onClick={() => {
-                      clearHoverTimer();
-                      setOpen(false);
-                      onOpenAgentSession(agent.pubkey, channelId);
-                    }}
-                    type="button"
-                  >
-                    <UserAvatar
-                      avatarUrl={agentAvatarUrl(agent)}
-                      className="shrink-0"
-                      displayName={agent.name}
-                      size="sm"
-                    />
-                    <span className="min-w-0 flex-1 truncate">
-                      {agent.name}
-                    </span>
-                    <span className="shrink-0 whitespace-nowrap text-xs font-medium opacity-80">
-                      View activity
-                    </span>
-                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground/70" />
-                  </button>
-                );
-              })}
-            </div>
-          </>
+          <button
+            className={cn(
+              "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
+              isSessionOpen
+                ? "bg-primary/10 text-primary"
+                : "text-foreground hover:bg-accent hover:text-accent-foreground",
+            )}
+            data-testid={`bot-activity-composer-item-${agent.pubkey}`}
+            onClick={openSession}
+            type="button"
+          >
+            <UserAvatar
+              avatarUrl={avatarUrl}
+              className="shrink-0"
+              displayName={agent.name}
+              size="sm"
+            />
+            <span className="min-w-0 flex-1 truncate">{agent.name}</span>
+            <span className="shrink-0 whitespace-nowrap text-xs font-medium opacity-80">
+              View activity
+            </span>
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground/70" />
+          </button>
         )}
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * Composer status strip for working agents: one pill per working agent, each
+ * owning its hover popover. Pills shrink and truncate their labels when
+ * several agents work at once so the strip never wraps the fixed-height row.
+ */
+export function BotActivityComposerAction({
+  agents,
+  channelId = null,
+  onOpenAgentSession,
+  openAgentSessionPubkey,
+  profiles,
+  workingBotPubkeys,
+}: BotActivityBarProps) {
+  const liveActivityEnabled = useFeatureEnabled("composerLiveActivity");
+
+  const workingAgents = React.useMemo(() => {
+    const workingSet = new Set(
+      workingBotPubkeys.map((pubkey) => pubkey.toLowerCase()),
+    );
+
+    return agents.filter((agent) => workingSet.has(agent.pubkey.toLowerCase()));
+  }, [agents, workingBotPubkeys]);
+
+  if (workingAgents.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-visible">
+      {workingAgents.map((agent) => (
+        <BotActivityAgentPill
+          agent={agent}
+          avatarUrl={profiles?.[agent.pubkey.toLowerCase()]?.avatarUrl ?? null}
+          channelId={channelId}
+          key={agent.pubkey}
+          liveActivityEnabled={liveActivityEnabled}
+          onOpenAgentSession={onOpenAgentSession}
+          openAgentSessionPubkey={openAgentSessionPubkey}
+          profiles={profiles}
+        />
+      ))}
+    </div>
   );
 }

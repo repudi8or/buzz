@@ -2,60 +2,114 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  deriveActivityPillLabel,
   deriveLastLiveAt,
-  resolveSelectedActivityAgent,
 } from "./composerLiveActivity.ts";
-
-const alice = { pubkey: "ALICE-pubkey", name: "Alice" };
-const bob = { pubkey: "bob-pubkey", name: "Bob" };
-
-test("explicit selection wins, case-insensitively", () => {
-  const agent = resolveSelectedActivityAgent({
-    openAgentSessionPubkey: "bob-pubkey",
-    selectedPubkey: "alice-PUBKEY",
-    workingAgents: [alice, bob],
-  });
-  assert.equal(agent, alice);
-});
-
-test("falls back to the open session agent", () => {
-  const agent = resolveSelectedActivityAgent({
-    openAgentSessionPubkey: "bob-pubkey",
-    selectedPubkey: null,
-    workingAgents: [alice, bob],
-  });
-  assert.equal(agent, bob);
-});
-
-test("falls back to the first working agent", () => {
-  const agent = resolveSelectedActivityAgent({
-    openAgentSessionPubkey: "gone-pubkey",
-    selectedPubkey: "also-gone",
-    workingAgents: [alice, bob],
-  });
-  assert.equal(agent, alice);
-});
-
-test("selection that stopped working falls through", () => {
-  const agent = resolveSelectedActivityAgent({
-    openAgentSessionPubkey: null,
-    selectedPubkey: "bob-pubkey",
-    workingAgents: [alice],
-  });
-  assert.equal(agent, alice);
-});
-
-test("returns null with no working agents", () => {
-  const agent = resolveSelectedActivityAgent({
-    openAgentSessionPubkey: null,
-    selectedPubkey: null,
-    workingAgents: [],
-  });
-  assert.equal(agent, null);
-});
 
 const CHANNEL = "channel-1";
 const OTHER_CHANNEL = "channel-2";
+
+const NOW = Date.parse("2026-07-23T00:01:00.000Z");
+
+/** Thought item: spine, headlined by its title. */
+const thought = (title, timestamp, channelId = CHANNEL) => ({
+  id: `thought-${title}-${timestamp}`,
+  type: "thought",
+  renderClass: "thought",
+  title,
+  text: "",
+  timestamp,
+  channelId,
+});
+
+/** Metadata item: meaningful but NOT spine — recedes when real work exists. */
+const metadata = (title, timestamp, channelId = CHANNEL) => ({
+  id: `metadata-${title}-${timestamp}`,
+  type: "metadata",
+  renderClass: "raw-rail",
+  title,
+  sections: [],
+  timestamp,
+  acpSource: "prompt_context",
+  channelId,
+});
+
+const secondsBeforeNow = (seconds) =>
+  new Date(NOW - seconds * 1000).toISOString();
+
+test("deriveActivityPillLabel returns the newest fresh headline, no rotation", () => {
+  const label = deriveActivityPillLabel({
+    channelId: CHANNEL,
+    now: NOW,
+    transcript: [
+      thought("Reading files", secondsBeforeNow(8)),
+      thought("Editing ChannelPane", secondsBeforeNow(2)),
+    ],
+  });
+  assert.equal(label, "Editing ChannelPane");
+});
+
+test("deriveActivityPillLabel decays to null once the newest headline is stale", () => {
+  const label = deriveActivityPillLabel({
+    channelId: CHANNEL,
+    now: NOW,
+    transcript: [thought("Editing ChannelPane", secondsBeforeNow(30))],
+  });
+  assert.equal(label, null);
+});
+
+test("deriveActivityPillLabel honors a custom staleness window", () => {
+  const transcript = [thought("Editing ChannelPane", secondsBeforeNow(30))];
+  const label = deriveActivityPillLabel({
+    channelId: CHANNEL,
+    now: NOW,
+    staleAfterMs: 60_000,
+    transcript,
+  });
+  assert.equal(label, "Editing ChannelPane");
+});
+
+test("deriveActivityPillLabel ignores other-channel items", () => {
+  const label = deriveActivityPillLabel({
+    channelId: CHANNEL,
+    now: NOW,
+    transcript: [
+      thought("In-channel work", secondsBeforeNow(10)),
+      thought("Other-channel work", secondsBeforeNow(1), OTHER_CHANNEL),
+    ],
+  });
+  assert.equal(label, "In-channel work");
+});
+
+test("deriveActivityPillLabel lets spine work headline over fresher metadata reads", () => {
+  const label = deriveActivityPillLabel({
+    channelId: CHANNEL,
+    now: NOW,
+    transcript: [
+      thought("Real work", secondsBeforeNow(10)),
+      metadata("Prompt context", secondsBeforeNow(1)),
+    ],
+  });
+  assert.equal(label, "Real work");
+});
+
+test("deriveActivityPillLabel falls back to metadata when no spine items exist", () => {
+  const label = deriveActivityPillLabel({
+    channelId: CHANNEL,
+    now: NOW,
+    transcript: [metadata("Prompt context", secondsBeforeNow(5))],
+  });
+  assert.equal(label, "Prompt context");
+});
+
+test("deriveActivityPillLabel returns null for an empty transcript", () => {
+  const label = deriveActivityPillLabel({
+    channelId: CHANNEL,
+    now: NOW,
+    transcript: [],
+  });
+  assert.equal(label, null);
+});
 
 test("deriveLastLiveAt prefers the newest channel-scoped transcript item", () => {
   const lastLiveAt = deriveLastLiveAt({

@@ -905,7 +905,6 @@ export const ChannelPane = React.memo(function ChannelPane({
                       openAgentSessionPubkey={openAgentSessionPubkey}
                       profiles={profiles}
                       workingBotPubkeys={threadComposerBotTypingPubkeys}
-                      variant="inline"
                     />
                   ) : null
                 }
