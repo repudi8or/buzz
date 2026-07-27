@@ -1,5 +1,4 @@
 import * as React from "react";
-import { Loader2 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import {
@@ -9,7 +8,6 @@ import {
 import { useAgentTranscript } from "@/features/agents/ui/useObserverEvents";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { ManagedAgent } from "@/shared/api/types";
-import { useFeatureEnabled } from "@/shared/features";
 import { cn } from "@/shared/lib/cn";
 import { useNow } from "@/shared/lib/useNow";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
@@ -27,7 +25,6 @@ type BotActivityBarProps = {
   agents: BotActivityAgent[];
   channelId?: string | null;
   onOpenAgentSession: (pubkey: string, channelId?: string | null) => void;
-  openAgentSessionPubkey: string | null;
   profiles?: UserProfileLookup;
   workingBotPubkeys: string[];
 };
@@ -77,6 +74,52 @@ type StripHoverPopover = {
   /** Pointer left a trigger or the open card: close after the grace delay. */
   scheduleClose: () => void;
 };
+
+/**
+ * Edge-fade state for the horizontally scrollable pill strip: which sides
+ * currently have pills clipped out of view. Tracks the scroller's scroll
+ * position plus size changes of both the scroller (container narrows —
+ * thread panel resize) and its content wrapper (pills entering, leaving, or
+ * relabeling to a different width), so the fades appear and disappear
+ * without a re-render triggering event.
+ */
+function useStripOverflowFades(
+  scrollerRef: React.RefObject<HTMLDivElement | null>,
+) {
+  const [fades, setFades] = React.useState({ end: false, start: false });
+
+  const updateFades = React.useCallback(() => {
+    const node = scrollerRef.current;
+    if (node === null) {
+      return;
+    }
+    // 1px slack absorbs sub-pixel rounding in scrollWidth/clientWidth.
+    const start = node.scrollLeft > 1;
+    const end = node.scrollLeft + node.clientWidth < node.scrollWidth - 1;
+    setFades((current) =>
+      current.start === start && current.end === end ? current : { end, start },
+    );
+  }, [scrollerRef]);
+
+  React.useEffect(() => {
+    const node = scrollerRef.current;
+    if (node === null) {
+      return;
+    }
+    updateFades();
+    const observer = new ResizeObserver(updateFades);
+    observer.observe(node);
+    // The content wrapper is the scroller's only child; observing it catches
+    // overflow changes that don't touch the scroller's own box.
+    const content = node.firstElementChild;
+    if (content !== null) {
+      observer.observe(content);
+    }
+    return () => observer.disconnect();
+  }, [scrollerRef, updateFades]);
+
+  return { fades, updateFades };
+}
 
 function useStripHoverPopover(): StripHoverPopover {
   const [activePubkey, setActivePubkey] = React.useState<string | null>(null);
@@ -158,9 +201,7 @@ function useStripHoverPopover(): StripHoverPopover {
  * out — deferred until the pill's slot settles when a reorder is in flight.
  * Hovering shows the agent's live activity feed as the popover surface
  * itself — flat, no inset box, no tab strip — while clicking the pill opens
- * the agent's full runtime in the auxiliary panel. With the
- * `composerLiveActivity` preview flag off, the hover popover keeps the
- * legacy "View activity" item instead.
+ * the agent's full runtime in the auxiliary panel.
  *
  * Only observer-backed agents reach this pill: typing-fallback-only agents
  * are diverted into the combined typing indicator group by
@@ -172,9 +213,7 @@ function BotActivityAgentPill({
   channelId,
   holdLabelSwap,
   hover,
-  liveActivityEnabled,
   onOpenAgentSession,
-  openAgentSessionPubkey,
   pinWidth,
   profiles,
 }: {
@@ -185,9 +224,7 @@ function BotActivityAgentPill({
   holdLabelSwap: boolean;
   /** Strip-level hover popover state shared by every pill. */
   hover: StripHoverPopover;
-  liveActivityEnabled: boolean;
   onOpenAgentSession: (pubkey: string, channelId?: string | null) => void;
-  openAgentSessionPubkey: string | null;
   /** Freeze the pill's rendered width (a hover card is showing). */
   pinWidth: boolean;
   profiles?: UserProfileLookup;
@@ -223,8 +260,6 @@ function BotActivityAgentPill({
         : { id: activeId, label: activeLabel },
     );
   }, [holdLabelSwap, activeId, activeLabel]);
-  const isSessionOpen =
-    openAgentSessionPubkey?.toLowerCase() === agent.pubkey.toLowerCase();
 
   // While a hover card is showing, the pill must not resize: label swaps
   // keep animating, but a longer/shorter label truncating inside a FROZEN
@@ -322,9 +357,7 @@ function BotActivityAgentPill({
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        className={cn(
-          liveActivityEnabled ? "w-80 overflow-hidden p-0" : "w-64 p-1",
-        )}
+        className="w-80 overflow-hidden p-0"
         onCloseAutoFocus={(event) => {
           // A hover preview must not yank focus back to the trigger on
           // close: the trigger's focus handler would re-open the card.
@@ -336,39 +369,13 @@ function BotActivityAgentPill({
         side="top"
         sideOffset={8}
       >
-        {liveActivityEnabled ? (
-          <ComposerLiveActivityFeed
-            agent={agent}
-            channelId={channelId}
-            className="h-48 rounded-[inherit]"
-            onOpenAgentSession={() => openSession()}
-            profiles={profiles}
-          />
-        ) : (
-          <button
-            className={cn(
-              "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
-              isSessionOpen
-                ? "bg-primary/10 text-primary"
-                : "text-foreground hover:bg-accent hover:text-accent-foreground",
-            )}
-            data-testid={`bot-activity-composer-item-${agent.pubkey}`}
-            onClick={openSession}
-            type="button"
-          >
-            <UserAvatar
-              avatarUrl={avatarUrl}
-              className="shrink-0"
-              displayName={agent.name}
-              size="sm"
-            />
-            <span className="min-w-0 flex-1 truncate">{agent.name}</span>
-            <span className="shrink-0 whitespace-nowrap text-xs font-medium opacity-80">
-              View activity
-            </span>
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground/70" />
-          </button>
-        )}
+        <ComposerLiveActivityFeed
+          agent={agent}
+          channelId={channelId}
+          className="h-48 rounded-[inherit]"
+          onOpenAgentSession={() => openSession()}
+          profiles={profiles}
+        />
       </PopoverContent>
     </Popover>
   );
@@ -387,12 +394,19 @@ function AnimatedPillSlot({
   children,
   freezeLayout,
   shouldReduceMotion,
+  shrinkToFit,
 }: {
   /** Render prop so the pill can defer label swaps while its slot moves. */
   children: (isMoving: boolean) => React.ReactNode;
   /** Disable slot layout animation while a hover card is showing. */
   freezeLayout: boolean;
   shouldReduceMotion: boolean;
+  /**
+   * Lone pill: shrink with the container (label ellipsizes) instead of
+   * overflowing into scroll — an edge fade over a single pill reads as a
+   * cut-off bug, not an affordance.
+   */
+  shrinkToFit: boolean;
 }) {
   const [isMoving, setIsMoving] = React.useState(false);
 
@@ -408,7 +422,12 @@ function AnimatedPillSlot({
   return (
     <motion.div
       animate={{ opacity: isMoving ? [1, 0.35, 1] : 1, scale: 1 }}
-      className="flex min-w-0"
+      // With several pills, shrink-0 keeps each at its natural
+      // (label-truncated) width so a strip that outgrows a narrow container
+      // scrolls — with the edge fade signalling the pills off view —
+      // instead of compressing every pill into an unreadable sliver. A lone
+      // pill instead shrinks to fit (min-w-0) so it never scrolls.
+      className={cn("flex", shrinkToFit ? "min-w-0" : "shrink-0")}
       exit={{ opacity: 0, scale: 0.9 }}
       initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.9 }}
       layout={!shouldReduceMotion && !freezeLayout}
@@ -441,18 +460,21 @@ function AnimatedPillSlot({
  * slot as the order changes — except while the cursor is over the bar or a
  * hover card is showing, when order, membership, layout animation, and pill
  * widths are all frozen so nothing can move out from under (or slide under)
- * the cursor. Pills shrink and truncate their labels when several agents
- * work at once so the strip never wraps the fixed-height row.
+ * the cursor. Each pill truncates its label at its own max width. A lone
+ * pill shrinks with a narrow container (its label ellipsizes) so it always
+ * fits; when SEVERAL pills outgrow a narrow container (thread panel
+ * toolbars especially) the strip scrolls horizontally — scrollbar hidden,
+ * with edge gradient fades signalling the pills off view — instead of
+ * compressing every pill into an unreadable sliver or wrapping the
+ * fixed-height row.
  */
 export function BotActivityComposerAction({
   agents,
   channelId = null,
   onOpenAgentSession,
-  openAgentSessionPubkey,
   profiles,
   workingBotPubkeys,
 }: BotActivityBarProps) {
-  const liveActivityEnabled = useFeatureEnabled("composerLiveActivity");
   const shouldReduceMotion = useReducedMotion();
   const hover = useStripHoverPopover();
   // The freeze engages as soon as the cursor is anywhere over the bar — not
@@ -462,6 +484,9 @@ export function BotActivityComposerAction({
   // grace period).
   const [barHovered, setBarHovered] = React.useState(false);
   const holdActive = barHovered || hover.activePubkey !== null;
+
+  const scrollerRef = React.useRef<HTMLDivElement | null>(null);
+  const { fades, updateFades } = useStripOverflowFades(scrollerRef);
 
   const workingAgents = React.useMemo(() => {
     const workingSet = new Set(
@@ -530,37 +555,68 @@ export function BotActivityComposerAction({
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: hover-only hold — keyboard focus drives the same hold via the pill triggers.
     <div
-      className="flex min-w-0 flex-1 items-center gap-1.5 overflow-visible"
+      className="relative min-w-0 flex-1"
       data-testid="bot-activity-strip"
       onMouseEnter={() => setBarHovered(true)}
       onMouseLeave={() => setBarHovered(false)}
     >
-      <AnimatePresence initial={false}>
-        {orderedAgents.map((agent) => (
-          <AnimatedPillSlot
-            freezeLayout={holdActive}
-            key={agent.pubkey}
-            shouldReduceMotion={Boolean(shouldReduceMotion)}
-          >
-            {(isMoving) => (
-              <BotActivityAgentPill
-                agent={agent}
-                avatarUrl={
-                  profiles?.[agent.pubkey.toLowerCase()]?.avatarUrl ?? null
-                }
-                channelId={channelId}
-                holdLabelSwap={isMoving}
-                hover={hover}
-                liveActivityEnabled={liveActivityEnabled}
-                onOpenAgentSession={onOpenAgentSession}
-                openAgentSessionPubkey={openAgentSessionPubkey}
-                pinWidth={holdActive}
-                profiles={profiles}
-              />
-            )}
-          </AnimatedPillSlot>
-        ))}
-      </AnimatePresence>
+      {/* layoutScroll keeps the slot layout animations correct while the
+          strip is scrolled — motion measures positions relative to the
+          scroll offset instead of jumping. The negative-margin/padding pair
+          gives focus rings and pill shadows room inside the clip box
+          without changing the row's height. */}
+      <motion.div
+        className="-my-1 flex items-center overflow-x-auto overscroll-x-contain py-1 scrollbar-none [&::-webkit-scrollbar]:hidden"
+        data-testid="bot-activity-strip-scroller"
+        layoutScroll
+        onScroll={updateFades}
+        ref={scrollerRef}
+      >
+        <div className="flex min-w-0 items-center gap-1.5">
+          <AnimatePresence initial={false}>
+            {orderedAgents.map((agent) => (
+              <AnimatedPillSlot
+                freezeLayout={holdActive}
+                key={agent.pubkey}
+                shouldReduceMotion={Boolean(shouldReduceMotion)}
+                shrinkToFit={orderedAgents.length === 1}
+              >
+                {(isMoving) => (
+                  <BotActivityAgentPill
+                    agent={agent}
+                    avatarUrl={
+                      profiles?.[agent.pubkey.toLowerCase()]?.avatarUrl ?? null
+                    }
+                    channelId={channelId}
+                    holdLabelSwap={isMoving}
+                    hover={hover}
+                    onOpenAgentSession={onOpenAgentSession}
+                    pinWidth={holdActive}
+                    profiles={profiles}
+                  />
+                )}
+              </AnimatedPillSlot>
+            ))}
+          </AnimatePresence>
+        </div>
+      </motion.div>
+      {/* Edge fades: obvious "more pills off view" affordance. Rendered only
+          for a side that actually has clipped content, so they never dim a
+          fully visible strip. */}
+      {fades.start ? (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-8 bg-linear-to-r from-background via-background/60 to-transparent"
+          data-testid="bot-activity-strip-fade-start"
+        />
+      ) : null}
+      {fades.end ? (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-8 bg-linear-to-l from-background via-background/60 to-transparent"
+          data-testid="bot-activity-strip-fade-end"
+        />
+      ) : null}
     </div>
   );
 }

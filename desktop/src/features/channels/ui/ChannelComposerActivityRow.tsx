@@ -35,7 +35,6 @@ export function ChannelComposerActivityRow({
   channel,
   currentPubkey,
   onOpenAgentSession,
-  openAgentSessionPubkey,
   profiles,
   typingPubkeys,
 }: {
@@ -43,7 +42,6 @@ export function ChannelComposerActivityRow({
   channel: Channel | null;
   currentPubkey?: string;
   onOpenAgentSession: (pubkey: string, channelId?: string | null) => void;
-  openAgentSessionPubkey: string | null;
   profiles?: UserProfileLookup;
   typingPubkeys: string[];
 }) {
@@ -113,16 +111,17 @@ export function ChannelComposerActivityRow({
       data-testid="channel-composer-activity-row"
     >
       <div className="flex h-full w-full items-center gap-3 overflow-visible">
-        {/* The pill strip sizes to its content (shrinkable when the row gets
-            tight); the typing group takes whatever is left so it sits
-            directly after the pills instead of splitting the row 50/50. */}
+        {/* The pill strip sizes to its content; when the row gets tight it
+            scrolls horizontally (edge fades signal clipped pills) rather
+            than compressing. The typing group takes whatever is left so it
+            sits directly after the pills instead of splitting the row
+            50/50. */}
         {observerWorkingPubkeys.length > 0 ? (
           <div className="flex min-w-0 overflow-visible">
             <BotActivityComposerAction
               agents={agents}
               channelId={channelId}
               onOpenAgentSession={onOpenAgentSession}
-              openAgentSessionPubkey={openAgentSessionPubkey}
               profiles={profiles}
               workingBotPubkeys={observerWorkingPubkeys}
             />

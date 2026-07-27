@@ -16,7 +16,7 @@ import { deriveLastLiveAt } from "./composerLiveActivity";
 
 /**
  * Single-agent live activity preview for the composer "agents working"
- * popover. Preview-gated behind the `composerLiveActivity` feature.
+ * popover.
  *
  * Renders the selected working agent's channel-scoped transcript with the
  * same compact primitive as the profile activity embed

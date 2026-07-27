@@ -2014,8 +2014,7 @@ test("shows and clears activity indicators for active channel agents", async ({
   const activityPill = page.getByTestId("bot-activity-composer-trigger");
   await expect(activityPill).toBeVisible();
   await expect(activityPill).not.toContainText("View activity");
-  // E2E seeds every preview feature on, so the composerLiveActivity path is
-  // what renders here: hovering the pill opens the live-activity preview.
+  // Hovering the pill opens the live-activity preview.
   await activityPill.hover();
   await expect(page.getByTestId("composer-live-activity-feed")).toBeVisible();
   // Clicking the pill promotes the agent's runtime into the aux panel.
@@ -2361,6 +2360,98 @@ test("hovering across pills switches a single live-activity card", async ({
   await expect(openOverlay).toHaveAttribute(
     "aria-label",
     /^Open astra's full activity/,
+  );
+});
+
+test("narrow strip scrolls horizontally with edge fades instead of compressing pills", async ({
+  page,
+}) => {
+  await installMockBridge(page, { managedAgents: PILL_AGENT_SEEDS });
+  await openAgentsChannelWithTwoWorkingPills(page);
+
+  // Constrain the activity row directly (instead of resizing the whole
+  // window) so the overflow condition is deterministic regardless of the
+  // app's responsive layout — this mirrors a narrow thread panel, where the
+  // same strip renders in the thread composer toolbar.
+  await page
+    .getByTestId("channel-composer-activity-row")
+    .evaluate((element) => {
+      element.style.width = "300px";
+    });
+
+  const scroller = page.getByTestId("bot-activity-strip-scroller");
+  await expect
+    .poll(() => scroller.evaluate((el) => el.scrollWidth - el.clientWidth))
+    .toBeGreaterThan(0);
+
+  // Pills keep a readable natural width instead of compressing into
+  // slivers to fit.
+  const triggers = page.getByTestId("bot-activity-composer-trigger");
+  const firstBox = await triggers.first().boundingBox();
+  expect(firstBox?.width ?? 0).toBeGreaterThan(120);
+
+  // At rest the strip is pinned to the start: clipped content (and its
+  // fade affordance) on the trailing side only.
+  await expect(page.getByTestId("bot-activity-strip-fade-end")).toBeVisible();
+  await expect(page.getByTestId("bot-activity-strip-fade-start")).toHaveCount(
+    0,
+  );
+
+  // Scrolling to the far end swaps the fades to the leading side.
+  await scroller.evaluate((el) => {
+    el.scrollLeft = el.scrollWidth;
+  });
+  await expect(page.getByTestId("bot-activity-strip-fade-start")).toBeVisible();
+  await expect(page.getByTestId("bot-activity-strip-fade-end")).toHaveCount(0);
+});
+
+test("lone pill shrinks to fit a narrow container without scroll fades", async ({
+  page,
+}) => {
+  await installMockBridge(page, { managedAgents: PILL_AGENT_SEEDS });
+  await page.goto("/");
+  await page.getByTestId("channel-agents").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("agents");
+  await page.waitForFunction(
+    () => typeof window.__BUZZ_E2E_SEED_ACTIVE_TURNS__ === "function",
+    null,
+    { timeout: 10_000 },
+  );
+  await page.evaluate(
+    ({ agentPubkey, channelId }) => {
+      window.__BUZZ_E2E_SEED_ACTIVE_TURNS__?.({
+        agentPubkey,
+        channelId,
+        turnId: "lone-pill-turn",
+      });
+    },
+    { agentPubkey: PILL_AGENT_NOVA, channelId: AGENTS_CHANNEL_ID },
+  );
+
+  const trigger = page.getByTestId("bot-activity-composer-trigger");
+  await expect(trigger).toHaveCount(1);
+
+  // Narrower than the pill's natural width: a lone pill must shrink and
+  // ellipsize rather than overflow into scroll — an edge fade over a single
+  // pill reads as a cut-off bug, not a "more pills off view" affordance.
+  const row = page.getByTestId("channel-composer-activity-row");
+  await row.evaluate((element) => {
+    element.style.width = "160px";
+  });
+
+  const scroller = page.getByTestId("bot-activity-strip-scroller");
+  await expect
+    .poll(() => scroller.evaluate((el) => el.scrollWidth - el.clientWidth))
+    .toBe(0);
+  await expect(page.getByTestId("bot-activity-strip-fade-end")).toHaveCount(0);
+  await expect(page.getByTestId("bot-activity-strip-fade-start")).toHaveCount(
+    0,
+  );
+
+  const pillBox = await trigger.boundingBox();
+  const rowBox = await row.boundingBox();
+  expect(pillBox?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(
+    rowBox?.width ?? 0,
   );
 });
 
