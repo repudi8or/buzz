@@ -25,6 +25,12 @@ type BotActivityBarProps = {
   channelId?: string | null;
   onOpenAgentSession: (pubkey: string, channelId?: string | null) => void;
   profiles?: UserProfileLookup;
+  /**
+   * Combined typing indicator (humans + typing-fallback agents), rendered as
+   * the strip's trailing item — a sibling of the working pills, so it shares
+   * the scroller, edge fades, and layout/enter/exit animations.
+   */
+  typingIndicator?: React.ReactNode;
   workingBotPubkeys: string[];
 };
 
@@ -285,8 +291,10 @@ function BotActivityAgentPill({
           overrides the button's leading-none). Inter's ascent+descent ink is
           ~1.21em (~14.5px at text-xs) — taller than a leading-none line box —
           and BOTH this span and the truncate span clip to their boxes, which
-          sheared descenders ("g", "y") off the label. */}
-      <span className="relative block h-4 min-w-0 flex-1 overflow-hidden leading-4">
+          sheared descenders
+          ("g", "y") off the label. translate-y-px mirrors the typing
+          indicator label's optical nudge so both baselines line up. */}
+      <span className="relative block h-4 min-w-0 flex-1 translate-y-px overflow-hidden leading-4">
         <AnimatePresence initial={false} mode="popLayout">
           <motion.span
             animate={{ y: 0 }}
@@ -323,7 +331,7 @@ function BotActivityAgentPill({
       <PopoverTrigger asChild>
         <button
           aria-label={`${agent.name} is working. View activity.`}
-          className="inline-flex h-7 min-w-0 max-w-50 items-center gap-1.5 rounded-full border border-border/60 bg-background pl-0.75 pr-2 text-xs font-semibold leading-none text-muted-foreground shadow-xs transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:border-primary/40 data-[state=open]:bg-primary/10 data-[state=open]:text-primary"
+          className="inline-flex h-7 min-w-0 max-w-50 items-center gap-2 rounded-full text-xs font-medium leading-none text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:text-primary"
           data-testid="bot-activity-composer-trigger"
           onBlur={hover.scheduleClose}
           onClick={(event) => {
@@ -450,7 +458,10 @@ function AnimatedPillSlot({
 
 /**
  * Composer status strip for working agents: one pill per working agent,
- * sharing one strip-level hover popover (at most one card open). Pills are
+ * sharing one strip-level hover popover (at most one card open), plus the
+ * combined typing indicator as the strip's trailing item — a slot sibling of
+ * the pills, so it scrolls with them, clips under the same edge fades, and
+ * enters/exits/moves with the same slot animations. Pills are
  * ordered by turn start (earliest worker left-most) — a stable slot for the
  * whole turn, so liveness is carried by each pill's label ticker while
  * positional motion is reserved for membership changes: a newly working
@@ -473,6 +484,7 @@ export function BotActivityComposerAction({
   channelId = null,
   onOpenAgentSession,
   profiles,
+  typingIndicator,
   workingBotPubkeys,
 }: BotActivityBarProps) {
   const shouldReduceMotion = useReducedMotion();
@@ -552,9 +564,14 @@ export function BotActivityComposerAction({
     );
   }, [holdActive, liveOrderedAgents]);
 
-  if (orderedAgents.length === 0) {
+  if (orderedAgents.length === 0 && typingIndicator == null) {
     return null;
   }
+
+  // A slot only shrinks with the container when it is the strip's LONE item;
+  // otherwise items keep their natural width and the strip scrolls under the
+  // edge fades.
+  const itemCount = orderedAgents.length + (typingIndicator == null ? 0 : 1);
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: hover-only hold — keyboard focus drives the same hold via the pill triggers.
@@ -592,7 +609,7 @@ export function BotActivityComposerAction({
                 freezeLayout={holdActive}
                 key={agent.pubkey}
                 shouldReduceMotion={Boolean(shouldReduceMotion)}
-                shrinkToFit={orderedAgents.length === 1}
+                shrinkToFit={itemCount === 1}
               >
                 {(isMoving) => (
                   <BotActivityAgentPill
@@ -610,6 +627,34 @@ export function BotActivityComposerAction({
                 )}
               </AnimatedPillSlot>
             ))}
+            {typingIndicator == null ? null : (
+              <AnimatedPillSlot
+                freezeLayout={holdActive}
+                key="typing"
+                shouldReduceMotion={Boolean(shouldReduceMotion)}
+                shrinkToFit={itemCount === 1}
+              >
+                {() => (
+                  <div
+                    className={cn(
+                      // Cap like the pills (which use max-w-50 each) so a
+                      // long "X, Y, and N more are typing" label truncates
+                      // instead of inflating the scroll extent.
+                      "flex h-7 min-w-0 max-w-64 items-center",
+                      // Composer-edge alignment when the typing group leads
+                      // the strip (no pills): 0.75rem/1rem composer padding
+                      // + 1px border. Mirrors the standalone row's old
+                      // inset, and now animates via the slot's layout spring
+                      // when pills come and go.
+                      orderedAgents.length === 0 && "pl-3.25 sm:pl-4.25",
+                    )}
+                    data-testid="bot-activity-typing-slot"
+                  >
+                    {typingIndicator}
+                  </div>
+                )}
+              </AnimatedPillSlot>
+            )}
           </AnimatePresence>
         </div>
       </motion.div>

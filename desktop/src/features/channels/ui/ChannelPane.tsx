@@ -41,6 +41,7 @@ import { useCardMintJobs } from "@/features/agents/cardMintStore";
 import { BotActivityComposerAction } from "@/features/channels/ui/BotActivityBar";
 import { ChannelComposerActivityRow } from "@/features/channels/ui/ChannelComposerActivityRow";
 import { ComposerActivityAccessory } from "@/features/messages/ui/ComposerActivityAccessory";
+import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
 import {
   containsWelcomePersonaMention,
   WelcomeComposerBanner,
@@ -893,15 +894,33 @@ export const ChannelPane = React.memo(function ChannelPane({
                   threadHeadMessage.id,
                 )}
                 threadReplyUnreadCounts={threadReplyUnreadCounts}
-                threadTypingPubkeys={threadTypingPubkeys}
-                activityAccessoryVisible={hasThreadComposerBotActivity}
+                activityAccessoryVisible={
+                  hasThreadComposerBotActivity ||
+                  threadTypingPubkeys.length > 0
+                }
                 activityAccessoryContent={
-                  hasThreadComposerBotActivity ? (
+                  hasThreadComposerBotActivity ||
+                  threadTypingPubkeys.length > 0 ? (
                     <BotActivityComposerAction
                       agents={activityAgents}
                       channelId={activeChannel?.id ?? null}
                       onOpenAgentSession={onOpenAgentSession}
                       profiles={profiles}
+                      typingIndicator={
+                        threadTypingPubkeys.length > 0 ? (
+                          <TypingIndicatorRow
+                            channel={activeChannel}
+                            // The strip's slot owns spacing and the
+                            // typing-only inset; zero the base paddings and
+                            // let the row shrink so the lone-item slot can
+                            // ellipsize the label.
+                            className="min-w-0 shrink px-0 py-0 sm:px-0"
+                            currentPubkey={currentPubkey}
+                            profiles={profiles}
+                            typingPubkeys={threadTypingPubkeys}
+                          />
+                        ) : null
+                      }
                       workingBotPubkeys={threadComposerBotTypingPubkeys}
                     />
                   ) : null

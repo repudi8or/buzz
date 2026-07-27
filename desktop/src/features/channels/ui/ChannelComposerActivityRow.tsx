@@ -12,11 +12,12 @@ import {
 import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { Channel } from "@/shared/api/types";
-import { cn } from "@/shared/lib/cn";
 
 /**
- * Status strip anchored directly below the message composer: the inline
- * "agents working" trigger plus the typing indicator.
+ * Status strip anchored directly below the message composer: the working
+ * agent pills plus the typing indicator, rendered as slot siblings inside
+ * ONE strip (BotActivityComposerAction) so both share the scroller, edge
+ * fades, and layout/enter/exit animations.
  *
  * The working set splits by signal source: observer-backed agents get the
  * interactive activity pills, while typing-fallback-only agents (no observer
@@ -110,42 +111,34 @@ export function ChannelComposerActivityRow({
       className="h-8.5 overflow-visible bg-background px-5 pb-1.5 pt-0"
       data-testid="channel-composer-activity-row"
     >
-      <div className="flex h-full w-full items-center gap-3 overflow-visible">
-        {/* The pill strip sizes to its content; when the row gets tight it
-            scrolls horizontally (edge fades signal clipped pills) rather
-            than compressing. The typing group takes whatever is left so it
-            sits directly after the pills instead of splitting the row
-            50/50. */}
-        {observerWorkingPubkeys.length > 0 ? (
-          <div className="flex min-w-0 overflow-visible">
-            <BotActivityComposerAction
-              agents={agents}
-              channelId={channelId}
-              onOpenAgentSession={onOpenAgentSession}
-              profiles={profiles}
-              workingBotPubkeys={observerWorkingPubkeys}
-            />
-          </div>
-        ) : null}
-        {combinedTypingPubkeys.length > 0 ? (
-          <TypingIndicatorRow
-            channel={channel}
-            className={cn(
-              "min-w-0 flex-1 py-0 pr-0",
-              // Composer-edge alignment only when the typing group leads the
-              // row; next to pills the row's gap is the whole spacing (the
-              // base variant's px-4/sm:px-6 must be zeroed, not just left
-              // unoverridden).
-              observerWorkingPubkeys.length === 0
-                ? "pl-[calc(0.75rem+1px)] sm:pl-[calc(1rem+1px)]"
-                : "pl-0 sm:pl-0",
-            )}
-            currentPubkey={currentPubkey}
-            // Match the activity pills' label weight so the two read as one
-            // strip.
-            labelClassName="font-semibold"
-            profiles={typingProfiles}
-            typingPubkeys={combinedTypingPubkeys}
+      <div className="flex h-full w-full items-center overflow-visible">
+        {/* One strip hosts both groups: working pills plus the typing group
+            as the strip's trailing slot sibling, so they share the scroller,
+            edge fades, and layout/enter/exit animations. When the row gets
+            tight the strip scrolls horizontally (edge fades signal clipped
+            items) rather than compressing. */}
+        {observerWorkingPubkeys.length > 0 ||
+        combinedTypingPubkeys.length > 0 ? (
+          <BotActivityComposerAction
+            agents={agents}
+            channelId={channelId}
+            onOpenAgentSession={onOpenAgentSession}
+            profiles={profiles}
+            typingIndicator={
+              combinedTypingPubkeys.length > 0 ? (
+                <TypingIndicatorRow
+                  channel={channel}
+                  // The strip's slot owns spacing and the typing-only inset;
+                  // zero the base paddings and let the row shrink so the
+                  // lone-item slot can ellipsize the label.
+                  className="min-w-0 shrink px-0 py-0 sm:px-0"
+                  currentPubkey={currentPubkey}
+                  profiles={typingProfiles}
+                  typingPubkeys={combinedTypingPubkeys}
+                />
+              ) : null
+            }
+            workingBotPubkeys={observerWorkingPubkeys}
           />
         ) : null}
       </div>

@@ -2597,6 +2597,76 @@ test("narrow strip scrolls horizontally with edge fades instead of compressing p
   }
 });
 
+test("typing group renders inside the pill strip and scrolls under the edge fades", async ({
+  page,
+}) => {
+  await installMockBridge(page, { managedAgents: PILL_AGENT_SEEDS });
+  await openAgentsChannelWithTwoWorkingPills(page);
+  await waitForMockLiveSubscription(page, "agents", KIND_TYPING_INDICATOR);
+
+  // A human typer joins the strip as the trailing slot sibling of the
+  // pills — same scroller, same edge fades, same slot animations — instead
+  // of a separate row sibling outside the scroll viewport.
+  await page.evaluate((pubkey) => {
+    window.__BUZZ_E2E_EMIT_MOCK_TYPING__?.({
+      channelName: "agents",
+      pubkey,
+    });
+  }, TEST_IDENTITIES.alice.pubkey);
+
+  const scroller = page.getByTestId("bot-activity-strip-scroller");
+  const typingIndicator = scroller.getByTestId("message-typing-indicator");
+  await expect(typingIndicator).toBeVisible();
+  await expect(
+    scroller.getByTestId("message-typing-indicator-label"),
+  ).toContainText("alice is typing");
+
+  // Trailing slot: the typing group sits after the last pill.
+  const lastPillBox = await page
+    .getByTestId("bot-activity-composer-trigger")
+    .last()
+    .boundingBox();
+  const typingBox = await typingIndicator.boundingBox();
+  expect(typingBox).not.toBeNull();
+  expect(lastPillBox).not.toBeNull();
+  if (typingBox && lastPillBox) {
+    expect(typingBox.x).toBeGreaterThanOrEqual(
+      lastPillBox.x + lastPillBox.width,
+    );
+  }
+
+  // Constrained, the strip overflows into scroll with the trailing fade:
+  // the typing group is part of the scrollable content and clips under the
+  // fade rather than holding a reserved spot outside the scroller.
+  await page
+    .getByTestId("channel-composer-activity-row")
+    .evaluate((element) => {
+      element.style.width = "300px";
+    });
+  await expect
+    .poll(() => scroller.evaluate((el) => el.scrollWidth - el.clientWidth))
+    .toBeGreaterThan(0);
+  await expect(page.getByTestId("bot-activity-strip-fade-end")).toBeVisible();
+
+  // Scrolled to the far end, the typing group's right edge lands inside the
+  // row — it scrolled WITH the pills.
+  await scroller.evaluate((el) => {
+    el.scrollLeft = el.scrollWidth;
+  });
+  await expect(page.getByTestId("bot-activity-strip-fade-start")).toBeVisible();
+  const constrainedRowBox = await page
+    .getByTestId("channel-composer-activity-row")
+    .boundingBox();
+  const scrolledTypingBox = await typingIndicator.boundingBox();
+  expect(scrolledTypingBox).not.toBeNull();
+  expect(constrainedRowBox).not.toBeNull();
+  if (scrolledTypingBox && constrainedRowBox) {
+    expect(scrolledTypingBox.x + scrolledTypingBox.width).toBeLessThanOrEqual(
+      constrainedRowBox.x + constrainedRowBox.width + 1,
+    );
+  }
+});
+
 test("lone pill shrinks to fit a narrow container without scroll fades", async ({
   page,
 }) => {

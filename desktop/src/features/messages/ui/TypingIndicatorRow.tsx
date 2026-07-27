@@ -18,7 +18,6 @@ type TypingIndicatorRowProps = {
   labelClassName?: string;
   profiles?: UserProfileLookup;
   typingPubkeys: string[];
-  variant?: "default" | "activity";
 };
 
 function resolveFallbackName(channel: Channel | null, pubkey: string) {
@@ -60,9 +59,7 @@ export function TypingIndicatorRow({
   labelClassName,
   profiles,
   typingPubkeys,
-  variant = "default",
 }: TypingIndicatorRowProps) {
-  const isActivityVariant = variant === "activity";
   const labels = React.useMemo(
     () =>
       typingPubkeys.map((pubkey) =>
@@ -80,22 +77,13 @@ export function TypingIndicatorRow({
   return (
     <div
       aria-live="polite"
-      className={cn(
-        "shrink-0 bg-transparent",
-        isActivityVariant ? "flex items-center px-0 py-0" : "px-4 py-2 sm:px-6",
-        className,
-      )}
+      className={cn("shrink-0 bg-transparent px-4 py-2 sm:px-6", className)}
       {...(labels.length > 0
         ? { "data-testid": "message-typing-indicator" }
         : {})}
     >
       {labels.length > 0 && (
-        <div
-          className={cn(
-            "flex min-w-0 w-full items-center",
-            isActivityVariant ? "h-full gap-1.5" : "gap-2",
-          )}
-        >
+        <div className="flex min-w-0 w-full items-center gap-2">
           <div className="flex shrink-0 items-center">
             {typingPubkeys.map((pubkey, index) => {
               const profile = profiles?.[pubkey.toLowerCase()];
@@ -104,8 +92,7 @@ export function TypingIndicatorRow({
                 <div
                   key={pubkey}
                   className={cn(
-                    "relative shrink-0 rounded-lg ring-1 ring-background",
-                    isActivityVariant ? "h-4 w-4" : "h-5 w-5",
+                    "relative h-5 w-5 shrink-0 rounded-lg ring-1 ring-background",
                     index > 0 && "-ml-1.5",
                   )}
                   data-testid="message-typing-avatar"
@@ -113,14 +100,8 @@ export function TypingIndicatorRow({
                   <ProfileAvatar
                     avatarUrl={profile?.avatarUrl ?? null}
                     label={label}
-                    className={cn(
-                      isActivityVariant
-                        ? "h-4 w-4 text-3xs"
-                        : "h-5 w-5 text-3xs",
-                    )}
-                    iconClassName={
-                      isActivityVariant ? "h-2.5 w-2.5" : "h-4 w-4"
-                    }
+                    className="h-5 w-5 text-3xs"
+                    iconClassName="h-4 w-4"
                   />
                 </div>
               );
@@ -128,10 +109,7 @@ export function TypingIndicatorRow({
           </div>
           <p
             className={cn(
-              "min-w-0 translate-y-px truncate text-muted-foreground",
-              isActivityVariant
-                ? "text-2xs font-medium leading-3"
-                : "text-xs font-medium leading-4",
+              "min-w-0 translate-y-px truncate text-xs font-medium leading-4 text-muted-foreground",
               labelClassName,
             )}
             data-testid="message-typing-indicator-label"
