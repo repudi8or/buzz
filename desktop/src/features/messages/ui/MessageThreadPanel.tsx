@@ -913,16 +913,30 @@ export function MessageThreadPanel({
               className={THREAD_PANEL_COMPOSER_GUTTER_CLASS}
               visible={hasComposerBottomActivity}
             >
-              <div className="mx-auto flex w-full max-w-4xl items-center gap-2 overflow-visible pl-2">
+              {/* No mx-auto/max-w column here: the composer above spans the
+                  full pane width, so the activity row must too or the typing
+                  group floats toward the pane's center. Mirrors
+                  ChannelComposerActivityRow: the pill strip sizes to its
+                  content and the typing group takes the remainder, instead of
+                  splitting the row 50/50. */}
+              <div className="flex w-full items-center gap-3 overflow-visible">
                 {activityAccessoryVisible && activityAccessoryContent ? (
-                  <div className="flex min-w-0 flex-1 overflow-visible">
+                  <div className="flex min-w-0 overflow-visible">
                     {activityAccessoryContent}
                   </div>
                 ) : null}
                 {threadTypingPubkeys.length > 0 ? (
                   <TypingIndicatorRow
                     channel={channel}
-                    className="min-w-0 flex-1 py-0 pl-[calc(0.75rem+1px)] pr-0 sm:pl-[calc(1rem+1px)]"
+                    className={cn(
+                      "min-w-0 flex-1 py-0 pr-0",
+                      // Composer-edge alignment only when the typing group
+                      // leads the row; next to pills the row's gap is the
+                      // whole spacing.
+                      activityAccessoryVisible && activityAccessoryContent
+                        ? "pl-0 sm:pl-0"
+                        : "pl-[calc(0.75rem+1px)] sm:pl-[calc(1rem+1px)]",
+                    )}
                     currentPubkey={currentPubkey}
                     profiles={profiles}
                     typingPubkeys={threadTypingPubkeys}
