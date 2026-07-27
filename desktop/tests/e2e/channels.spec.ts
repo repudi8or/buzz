@@ -2003,64 +2003,112 @@ test("shows and clears activity indicators for active channel agents", async ({
   await page.getByTestId("channel-agents").click();
   await expect(page.getByTestId("chat-title")).toHaveText("agents");
   await waitForMockLiveSubscription(page, "agents", KIND_TYPING_INDICATOR);
+  await page.waitForFunction(
+    () => typeof window.__BUZZ_E2E_SEED_ACTIVE_TURNS__ === "function",
+    null,
+    { timeout: 10_000 },
+  );
 
+  // A typing-only agent folds into the combined typing indicator group with
+  // the humans — status pills are observer-backed only, so no pill mounts
+  // (ChannelComposerActivityRow's source partition).
   await page.evaluate((pubkey) => {
     window.__BUZZ_E2E_EMIT_MOCK_TYPING__?.({
       channelName: "agents",
       pubkey,
     });
   }, TEST_IDENTITIES.alice.pubkey);
+  await expect(page.getByTestId("message-typing-indicator")).toBeVisible();
+  await expect(
+    page.getByTestId("message-typing-indicator-label"),
+  ).toContainText("alice");
+  await expect(page.getByTestId("bot-activity-composer-trigger")).toHaveCount(
+    0,
+  );
+
+  // An observer-backed turn promotes the agent into a status pill; the
+  // observer signal outranks the typing fallback for the same channel, so
+  // the agent leaves the typing group at the same time.
+  await page.evaluate(
+    ({ channelId, pubkey }) => {
+      window.__BUZZ_E2E_SEED_ACTIVE_TURNS__?.({
+        agentPubkey: pubkey,
+        channelId,
+        turnId: "indicator-turn",
+      });
+    },
+    { channelId: AGENTS_CHANNEL_ID, pubkey: TEST_IDENTITIES.alice.pubkey },
+  );
+  await seedPillActivityMessage(page, {
+    agentPubkey: TEST_IDENTITIES.alice.pubkey,
+    atMs: Date.now(),
+    seq: Date.now(),
+    text: "Alice: indexing the channel history",
+  });
 
   const activityPill = page.getByTestId("bot-activity-composer-trigger");
   await expect(activityPill).toBeVisible();
   await expect(activityPill).not.toContainText("View activity");
+  await expect(page.getByTestId("message-typing-indicator")).toHaveCount(0);
   // Hovering the pill opens the live-activity preview.
   await activityPill.hover();
   await expect(page.getByTestId("composer-live-activity-feed")).toBeVisible();
-  // Clicking the pill promotes the agent's runtime into the aux panel.
+  // Clicking the pill promotes the agent's runtime into the aux panel,
+  // scoped to this channel and showing the agent's live transcript.
   await activityPill.click();
   await expect(page.getByTestId("agent-session-thread-panel")).toBeVisible();
+  await expect(page.getByTestId("agent-session-scope-label")).toContainText(
+    "#agents",
+  );
   await expect(page.getByTestId("agent-session-thread-panel")).toContainText(
-    "alice",
+    "Alice: indexing the channel history",
   );
   // Opened from the composer with no prior pane: there is nowhere to go
   // "back" to, so the header shows only the close affordance.
   await expect(page.getByTestId("agent-session-back")).toHaveCount(0);
   await expect(page.getByTestId("auxiliary-panel-close")).toBeVisible();
-  await expect(page.getByTestId("agent-transcript-now-summary")).toHaveCount(0);
   await page.getByTestId("agent-session-settings-menu-trigger").click();
   await expect(page.getByTestId("agent-session-stop-turn")).toBeVisible();
   await expect(page.getByTestId("agent-session-stop-turn")).toBeDisabled();
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("agent-session-thread-panel")).toContainText(
-    "No ACP activity yet",
-  );
   await expect(page.getByTestId("message-typing-indicator")).toHaveCount(0);
 
-  await page.evaluate((pubkey) => {
-    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
-      channelName: "agents",
-      content: "Done.",
-      pubkey,
-    });
-  }, TEST_IDENTITIES.alice.pubkey);
+  // Completing the turn clears the pill; the agent's finished message lands
+  // in the timeline as usual.
+  await page.evaluate(
+    ({ channelId, pubkey }) => {
+      window.__BUZZ_E2E_SEED_ACTIVE_TURNS__?.({
+        agentPubkey: pubkey,
+        channelId,
+        turnId: "indicator-turn",
+        kind: "turn_completed",
+      });
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "agents",
+        content: "Done.",
+        pubkey,
+      });
+    },
+    { channelId: AGENTS_CHANNEL_ID, pubkey: TEST_IDENTITIES.alice.pubkey },
+  );
 
   await expect(page.getByTestId("message-timeline")).toContainText("Done.");
   await expect(page.getByTestId("bot-activity-composer-trigger")).toHaveCount(
     0,
   );
 
-  await page.waitForTimeout(1_200);
-  await page.evaluate((pubkey) => {
-    window.__BUZZ_E2E_EMIT_MOCK_TYPING__?.({
-      channelName: "agents",
-      pubkey,
-    });
-  }, TEST_IDENTITIES.alice.pubkey);
-
-  await expect(page.getByTestId("bot-activity-composer-trigger")).toHaveCount(
-    0,
+  // A fresh turn re-mounts the pill — the cleared state is not sticky.
+  await page.evaluate(
+    ({ channelId, pubkey }) => {
+      window.__BUZZ_E2E_SEED_ACTIVE_TURNS__?.({
+        agentPubkey: pubkey,
+        channelId,
+        turnId: "indicator-turn-2",
+      });
+    },
+    { channelId: AGENTS_CHANNEL_ID, pubkey: TEST_IDENTITIES.alice.pubkey },
   );
+  await expect(page.getByTestId("bot-activity-composer-trigger")).toBeVisible();
 });
 
 test("composer does not shift when the activity row mounts and clears", async ({
@@ -2070,7 +2118,11 @@ test("composer does not shift when the activity row mounts and clears", async ({
 
   await page.getByTestId("channel-agents").click();
   await expect(page.getByTestId("chat-title")).toHaveText("agents");
-  await waitForMockLiveSubscription(page, "agents", KIND_TYPING_INDICATOR);
+  await page.waitForFunction(
+    () => typeof window.__BUZZ_E2E_SEED_ACTIVE_TURNS__ === "function",
+    null,
+    { timeout: 10_000 },
+  );
 
   // The activity row below the composer has a fixed height (h-8.5 in
   // ChannelComposerActivityRow) so the bottom-anchored composer must not move
@@ -2084,27 +2136,47 @@ test("composer does not shift when the activity row mounts and clears", async ({
   };
   const idleComposerTop = (await composerBox()).y;
 
+  await page.evaluate(
+    ({ channelId, pubkey }) => {
+      window.__BUZZ_E2E_SEED_ACTIVE_TURNS__?.({
+        agentPubkey: pubkey,
+        channelId,
+        turnId: "no-shift-turn",
+      });
+    },
+    { channelId: AGENTS_CHANNEL_ID, pubkey: TEST_IDENTITIES.alice.pubkey },
+  );
+
+  await expect(page.getByTestId("bot-activity-composer-trigger")).toBeVisible();
+  expect((await composerBox()).y).toBeCloseTo(idleComposerTop, 0);
+
+  await page.evaluate(
+    ({ channelId, pubkey }) => {
+      window.__BUZZ_E2E_SEED_ACTIVE_TURNS__?.({
+        agentPubkey: pubkey,
+        channelId,
+        turnId: "no-shift-turn",
+        kind: "turn_completed",
+      });
+    },
+    { channelId: AGENTS_CHANNEL_ID, pubkey: TEST_IDENTITIES.alice.pubkey },
+  );
+
+  await expect(page.getByTestId("bot-activity-composer-trigger")).toHaveCount(
+    0,
+  );
+  expect((await composerBox()).y).toBeCloseTo(idleComposerTop, 0);
+
+  // The combined typing group mounts into the same fixed row — it must not
+  // move the composer either.
+  await waitForMockLiveSubscription(page, "agents", KIND_TYPING_INDICATOR);
   await page.evaluate((pubkey) => {
     window.__BUZZ_E2E_EMIT_MOCK_TYPING__?.({
       channelName: "agents",
       pubkey,
     });
   }, TEST_IDENTITIES.alice.pubkey);
-
-  await expect(page.getByTestId("bot-activity-composer-trigger")).toBeVisible();
-  expect((await composerBox()).y).toBeCloseTo(idleComposerTop, 0);
-
-  await page.evaluate((pubkey) => {
-    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
-      channelName: "agents",
-      content: "Done.",
-      pubkey,
-    });
-  }, TEST_IDENTITIES.alice.pubkey);
-
-  await expect(page.getByTestId("bot-activity-composer-trigger")).toHaveCount(
-    0,
-  );
+  await expect(page.getByTestId("message-typing-indicator")).toBeVisible();
   expect((await composerBox()).y).toBeCloseTo(idleComposerTop, 0);
 });
 
@@ -2254,15 +2326,19 @@ test("hover card freezes pill order; queued reorder applies on close", async ({
   }
 
   // Newest activity for astra would move her pill to the front — but a hover
-  // card is showing, so the strip must not move. The dwell covers the close
-  // grace (180ms) plus the reorder spring (0.9s) that would have played.
+  // card is showing, so the strip must not move. Waiting on the pill's label
+  // to swap to the new message text proves the store update reached this
+  // strip's render; a broken freeze would have flipped the DOM order in that
+  // same commit, so no blind animation-length sleep is needed.
   await seedPillActivityMessage(page, {
     agentPubkey: PILL_AGENT_ASTRA,
     atMs: baseMs + 5_000,
     seq: baseMs + 10_003,
     text: "Astra: verifying the turn-resurrection path",
   });
-  await page.waitForTimeout(1_200);
+  await expect(astraPill).toContainText(
+    "Astra: verifying the turn-resurrection path",
+  );
   await expect(feed).toBeVisible();
   await expect(triggers.first()).toHaveAttribute(
     "aria-label",
@@ -2292,28 +2368,37 @@ test("hovering the bar itself freezes pill order without opening a card", async 
   await installMockBridge(page, { managedAgents: PILL_AGENT_SEEDS });
   const { baseMs, triggers } = await openAgentsChannelWithTwoWorkingPills(page);
 
-  // Park the cursor on the bar's empty right side — over the strip, not a
-  // pill. This alone must engage the freeze; no card opens.
-  const strip = page.getByTestId("bot-activity-strip");
-  const stripBox = await strip.boundingBox();
-  if (!stripBox) {
-    throw new Error("Activity strip is not visible.");
+  // Park the cursor in the gap between the two pills — over the strip, not a
+  // pill trigger. The strip sizes to its content, so there is no reliable
+  // "empty right side"; the inter-pill gap is the one spot guaranteed to be
+  // strip-not-pill. This alone must engage the freeze; no card opens.
+  const novaBox = await triggers.first().boundingBox();
+  const astraBox = await triggers.nth(1).boundingBox();
+  if (!novaBox || !astraBox) {
+    throw new Error("Both pills must be visible.");
   }
-  await strip.hover({
-    position: { x: stripBox.width - 8, y: stripBox.height / 2 },
-  });
-  await page.waitForTimeout(400);
-  await expect(page.getByTestId("composer-live-activity-feed")).toBeHidden();
+  await page.mouse.move(
+    (novaBox.x + novaBox.width + astraBox.x) / 2,
+    novaBox.y + novaBox.height / 2,
+  );
+  // The bar hold pins every pill's width via an inline style — waiting for
+  // it proves the freeze is engaged before the reorder attempt below.
+  await expect(triggers.first()).toHaveAttribute("style", /width/);
+  await expect(page.getByTestId("composer-live-activity-feed")).toHaveCount(0);
 
   // Newest activity for astra would move her pill to the front — but the
-  // cursor is over the bar, so the order stays frozen.
+  // cursor is over the bar, so the order stays frozen. The label swap
+  // confirms the store update reached the strip without a blind sleep.
   await seedPillActivityMessage(page, {
     agentPubkey: PILL_AGENT_ASTRA,
     atMs: baseMs + 5_000,
     seq: baseMs + 10_003,
     text: "Astra: verifying the turn-resurrection path",
   });
-  await page.waitForTimeout(1_200);
+  await expect(triggers.nth(1)).toContainText(
+    "Astra: verifying the turn-resurrection path",
+  );
+  await expect(page.getByTestId("composer-live-activity-feed")).toHaveCount(0);
   await expect(triggers.first()).toHaveAttribute(
     "aria-label",
     "nova is working. View activity.",
