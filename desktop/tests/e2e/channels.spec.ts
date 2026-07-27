@@ -2109,6 +2109,261 @@ test("composer does not shift when the activity row mounts and clears", async ({
   expect((await composerBox()).y).toBeCloseTo(idleComposerTop, 0);
 });
 
+// ── Composer pill hover freeze ───────────────────────────────────────────────
+// Working pills reorder most-recently-active-first. While the cursor is
+// anywhere over the activity bar OR a hover card is showing, the strip must
+// not move under the cursor: pill order, membership, and widths are frozen,
+// and the queued reorder applies (animated) only after the hold releases
+// (BotActivityBar strip-level hover popover + bar-hover freeze).
+
+const PILL_AGENT_NOVA = "cc".repeat(32);
+const PILL_AGENT_ASTRA = "dd".repeat(32);
+const PILL_AGENT_SEEDS = [
+  {
+    pubkey: PILL_AGENT_NOVA,
+    name: "nova",
+    status: "running" as const,
+    channelNames: ["agents"],
+  },
+  {
+    pubkey: PILL_AGENT_ASTRA,
+    name: "astra",
+    status: "running" as const,
+    channelNames: ["agents"],
+  },
+];
+
+/**
+ * Seed one channel-scoped assistant-message observer event. Its transcript
+ * timestamp drives the strip's most-recent-first pill order, so tests pass
+ * explicit future `atMs` stamps to make the order deterministic.
+ */
+async function seedPillActivityMessage(
+  page: import("@playwright/test").Page,
+  input: { agentPubkey: string; atMs: number; seq: number; text: string },
+) {
+  await page.evaluate(
+    ({ agentPubkey, atMs, channelId, seq, text }) => {
+      const sessionId = `seed-session-${agentPubkey.slice(0, 6)}`;
+      window.__BUZZ_E2E_SEED_OBSERVER_EVENTS__?.({
+        agentPubkey,
+        events: [
+          {
+            seq,
+            timestamp: new Date(atMs).toISOString(),
+            kind: "acp_read",
+            agentIndex: 0,
+            channelId,
+            sessionId,
+            turnId: `seed-turn-${agentPubkey.slice(0, 6)}`,
+            payload: {
+              jsonrpc: "2.0",
+              method: "session/update",
+              params: {
+                sessionId,
+                update: {
+                  sessionUpdate: "agent_message_chunk",
+                  messageId: `seed-msg-${agentPubkey.slice(0, 6)}-${seq}`,
+                  content: { type: "text", text },
+                },
+              },
+            },
+          },
+        ],
+      });
+    },
+    { ...input, channelId: AGENTS_CHANNEL_ID },
+  );
+}
+
+/**
+ * Open #agents with two seeded working agents. Activity messages stamp nova
+ * as most recent, so the strip renders [nova, astra]. Returns the shared
+ * trigger locator and the timestamp base used for the seeds.
+ */
+async function openAgentsChannelWithTwoWorkingPills(
+  page: import("@playwright/test").Page,
+) {
+  await page.goto("/");
+  await page.getByTestId("channel-agents").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("agents");
+  await page.waitForFunction(
+    () => typeof window.__BUZZ_E2E_SEED_ACTIVE_TURNS__ === "function",
+    null,
+    { timeout: 10_000 },
+  );
+
+  const baseMs = Date.now();
+  await page.evaluate(
+    ({ agents, channelId }) => {
+      for (const [index, agentPubkey] of agents.entries()) {
+        window.__BUZZ_E2E_SEED_ACTIVE_TURNS__?.({
+          agentPubkey,
+          channelId,
+          turnId: `pill-turn-${index}`,
+        });
+      }
+    },
+    {
+      agents: [PILL_AGENT_ASTRA, PILL_AGENT_NOVA],
+      channelId: AGENTS_CHANNEL_ID,
+    },
+  );
+  // Future-stamped messages outrank the just-seeded turn events regardless
+  // of turn-seed timing: nova (+2s) newest, astra (+1s) second.
+  await seedPillActivityMessage(page, {
+    agentPubkey: PILL_AGENT_ASTRA,
+    atMs: baseMs + 1_000,
+    seq: baseMs + 10_001,
+    text: "Astra: reviewing the composer wiring",
+  });
+  await seedPillActivityMessage(page, {
+    agentPubkey: PILL_AGENT_NOVA,
+    atMs: baseMs + 2_000,
+    seq: baseMs + 10_002,
+    text: "Nova: tracing the observer store",
+  });
+
+  const triggers = page.getByTestId("bot-activity-composer-trigger");
+  await expect(triggers).toHaveCount(2);
+  await expect(triggers.first()).toHaveAttribute(
+    "aria-label",
+    "nova is working. View activity.",
+  );
+  return { baseMs, triggers };
+}
+
+test("hover card freezes pill order; queued reorder applies on close", async ({
+  page,
+}) => {
+  await installMockBridge(page, { managedAgents: PILL_AGENT_SEEDS });
+  const { baseMs, triggers } = await openAgentsChannelWithTwoWorkingPills(page);
+
+  const astraPill = page.getByRole("button", {
+    name: "astra is working. View activity.",
+  });
+  await astraPill.hover();
+  const feed = page.getByTestId("composer-live-activity-feed");
+  await expect(feed).toBeVisible();
+  await expect(page.getByTestId("composer-live-activity-open")).toHaveAttribute(
+    "aria-label",
+    /^Open astra's full activity/,
+  );
+  const heldBox = await astraPill.boundingBox();
+  if (!heldBox) {
+    throw new Error("Hovered pill is not visible.");
+  }
+
+  // Newest activity for astra would move her pill to the front — but a hover
+  // card is showing, so the strip must not move. The dwell covers the close
+  // grace (180ms) plus the reorder spring (0.9s) that would have played.
+  await seedPillActivityMessage(page, {
+    agentPubkey: PILL_AGENT_ASTRA,
+    atMs: baseMs + 5_000,
+    seq: baseMs + 10_003,
+    text: "Astra: verifying the turn-resurrection path",
+  });
+  await page.waitForTimeout(1_200);
+  await expect(feed).toBeVisible();
+  await expect(triggers.first()).toHaveAttribute(
+    "aria-label",
+    "nova is working. View activity.",
+  );
+  const stillHeldBox = await astraPill.boundingBox();
+  if (!stillHeldBox) {
+    throw new Error("Hovered pill is not visible after the reorder attempt.");
+  }
+  // Frozen order + pinned width: the hovered pill's slot and size held even
+  // though its label swapped to the new (longer) message text.
+  expect(stillHeldBox.x).toBeCloseTo(heldBox.x, 0);
+  expect(stillHeldBox.width).toBeCloseTo(heldBox.width, 0);
+
+  // Release the hover: the card closes and the queued reorder applies.
+  await page.getByTestId("chat-title").hover();
+  await expect(feed).toBeHidden();
+  await expect(triggers.first()).toHaveAttribute(
+    "aria-label",
+    "astra is working. View activity.",
+  );
+});
+
+test("hovering the bar itself freezes pill order without opening a card", async ({
+  page,
+}) => {
+  await installMockBridge(page, { managedAgents: PILL_AGENT_SEEDS });
+  const { baseMs, triggers } = await openAgentsChannelWithTwoWorkingPills(page);
+
+  // Park the cursor on the bar's empty right side — over the strip, not a
+  // pill. This alone must engage the freeze; no card opens.
+  const strip = page.getByTestId("bot-activity-strip");
+  const stripBox = await strip.boundingBox();
+  if (!stripBox) {
+    throw new Error("Activity strip is not visible.");
+  }
+  await strip.hover({
+    position: { x: stripBox.width - 8, y: stripBox.height / 2 },
+  });
+  await page.waitForTimeout(400);
+  await expect(page.getByTestId("composer-live-activity-feed")).toBeHidden();
+
+  // Newest activity for astra would move her pill to the front — but the
+  // cursor is over the bar, so the order stays frozen.
+  await seedPillActivityMessage(page, {
+    agentPubkey: PILL_AGENT_ASTRA,
+    atMs: baseMs + 5_000,
+    seq: baseMs + 10_003,
+    text: "Astra: verifying the turn-resurrection path",
+  });
+  await page.waitForTimeout(1_200);
+  await expect(triggers.first()).toHaveAttribute(
+    "aria-label",
+    "nova is working. View activity.",
+  );
+
+  // Leaving the bar releases the hold: the queued reorder applies.
+  await page.getByTestId("chat-title").hover();
+  await expect(triggers.first()).toHaveAttribute(
+    "aria-label",
+    "astra is working. View activity.",
+  );
+});
+
+test("hovering across pills switches a single live-activity card", async ({
+  page,
+}) => {
+  await installMockBridge(page, { managedAgents: PILL_AGENT_SEEDS });
+  await openAgentsChannelWithTwoWorkingPills(page);
+
+  const novaPill = page.getByRole("button", {
+    name: "nova is working. View activity.",
+  });
+  const astraPill = page.getByRole("button", {
+    name: "astra is working. View activity.",
+  });
+  const feed = page.getByTestId("composer-live-activity-feed");
+  const openOverlay = page.getByTestId("composer-live-activity-open");
+
+  await novaPill.hover();
+  await expect(feed).toBeVisible();
+  await expect(openOverlay).toHaveAttribute(
+    "aria-label",
+    /^Open nova's full activity/,
+  );
+
+  // Traveling to the other pill swaps the card immediately — one card, no
+  // double-open, no stuck card from the old pill's close timer. Wait for the
+  // old card's ~150ms exit animation with retrying count assertions first;
+  // attribute assertions would hit a non-retrying strict-mode violation
+  // while both cards are briefly mounted.
+  await astraPill.hover();
+  await expect(openOverlay).toHaveCount(1);
+  await expect(feed).toHaveCount(1);
+  await expect(openOverlay).toHaveAttribute(
+    "aria-label",
+    /^Open astra's full activity/,
+  );
+});
+
 test("members sidebar exposes view-activity for a viewer-owned relay agent", async ({
   page,
 }) => {

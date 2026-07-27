@@ -67,7 +67,7 @@ test("deriveActivityPillLabel returns the newest fresh headline, no rotation", (
   const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
     now: NOW,
-    transcript: [thought("Reading files", secondsBeforeNow(8)), editing],
+    transcript: [thought("Reading files", secondsBeforeNow(4)), editing],
   });
   assert.deepEqual(headline, { id: editing.id, label: "Editing ChannelPane" });
 });
@@ -93,7 +93,7 @@ test("deriveActivityPillLabel honors a custom staleness window", () => {
 });
 
 test("deriveActivityPillLabel ignores other-channel items", () => {
-  const inChannel = thought("In-channel work", secondsBeforeNow(10));
+  const inChannel = thought("In-channel work", secondsBeforeNow(3));
   const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
     now: NOW,
@@ -106,7 +106,7 @@ test("deriveActivityPillLabel ignores other-channel items", () => {
 });
 
 test("deriveActivityPillLabel lets spine work headline over fresher metadata reads", () => {
-  const realWork = thought("Real work", secondsBeforeNow(10));
+  const realWork = thought("Real work", secondsBeforeNow(4));
   const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
     now: NOW,
@@ -135,7 +135,7 @@ test("deriveActivityPillLabel returns null for an empty transcript", () => {
 });
 
 test("deriveActivityPillLabel never headlines usage/commands meta frames", () => {
-  const realWork = thought("Real work", secondsBeforeNow(10));
+  const realWork = thought("Real work", secondsBeforeNow(4));
   const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
     now: NOW,

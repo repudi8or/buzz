@@ -7,9 +7,11 @@ import type { TranscriptItem } from "@/features/agents/ui/agentSessionTypes";
 
 /**
  * How long the latest action headline stays on a working agent's composer
- * pill before the label decays to the generic working state.
+ * pill before the label decays to the generic working state. Kept short so
+ * any pause in the event stream (a long tool call, a thinking gap) cycles
+ * the pill back to "<name> is working…" until the next action lands.
  */
-export const ACTIVITY_PILL_STALE_MS = 15_000;
+export const ACTIVITY_PILL_STALE_MS = 6_000;
 
 /**
  * Lifecycle meta-frames that must never headline the pill. They pass the
@@ -37,8 +39,8 @@ export type ActivityPillHeadline = {
  * Channel-scoped, two-tier scan (spine items headline over metadata reads,
  * mirroring the session transcript's noise gate), newest wins. Returns null
  * when there is no headline or the newest one is older than `staleAfterMs`;
- * the pill then falls back to its generic "Working…" label. Deliberately no
- * rotation through recent actions: one headline, then decay.
+ * the pill then falls back to its generic "<name> is working…" label.
+ * Deliberately no rotation through recent actions: one headline, then decay.
  */
 export function deriveActivityPillLabel({
   channelId,
