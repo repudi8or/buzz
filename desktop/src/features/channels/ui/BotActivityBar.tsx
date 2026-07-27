@@ -2,7 +2,6 @@ import * as React from "react";
 import { Loader2 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
-import { useAgentWorking } from "@/features/agents/agentWorkingSignal";
 import {
   getAgentTranscript,
   subscribeAgentObserverStore,
@@ -163,10 +162,9 @@ function useStripHoverPopover(): StripHoverPopover {
  * `composerLiveActivity` preview flag off, the hover popover keeps the
  * legacy "View activity" item instead.
  *
- * Typing-fallback-only agents (working source "typing", no observer turn)
- * render a passive, borderless, width-uncapped status instead: no hover
- * card, no click-through, not focusable — there is no transcript or session
- * behind the signal to open.
+ * Only observer-backed agents reach this pill: typing-fallback-only agents
+ * are diverted into the combined typing indicator group by
+ * ChannelComposerActivityRow before the strip renders.
  */
 function BotActivityAgentPill({
   agent,
@@ -197,10 +195,6 @@ function BotActivityAgentPill({
   const pillKey = agent.pubkey.toLowerCase();
   const open = hover.activePubkey === pillKey;
   const shouldReduceMotion = useReducedMotion();
-  // Typing-fallback-only agents (no observer turn) render borderless and
-  // uncapped — the basic "is typing" presentation.
-  const typingOnly =
-    useAgentWorking(agent.pubkey, channelId).source === "typing";
   const transcript = useAgentTranscript(true, agent.pubkey);
   const now = useNow(PILL_LABEL_TICK_MS);
   const headline = React.useMemo(
@@ -209,11 +203,8 @@ function BotActivityAgentPill({
   );
   const activeId = headline?.id ?? GENERIC_LABEL_ID;
   // No fresh action headline (see deriveActivityPillLabel) — decay to the
-  // agent-named generic label. Typing-fallback-only agents read
-  // "is typing…" (matching the human indicator's vocabulary); observer-backed
-  // agents read "is working…".
-  const activeLabel =
-    headline?.label ?? `${agent.name} is ${typingOnly ? "typing" : "working"}…`;
+  // agent-named generic working label.
+  const activeLabel = headline?.label ?? `${agent.name} is working…`;
   // The rendered label lags the derived one while the pill is moving: the
   // push-up ticker plays after the slot settles (or immediately when idle).
   // Keyed by transcript item id, not label text — a NEW action swaps, while
@@ -261,7 +252,7 @@ function BotActivityAgentPill({
     <>
       <UserAvatar
         avatarUrl={avatarUrl}
-        className="!h-[18px] !w-[18px] shrink-0 text-3xs"
+        className="!h-5 !w-5 shrink-0 text-3xs"
         displayName={agent.name}
         size="xs"
       />
@@ -288,20 +279,6 @@ function BotActivityAgentPill({
     </>
   );
 
-  // Typing-fallback-only: a passive status readout — no hover card, no
-  // click-through, not focusable. There is no observer turn (and so no
-  // transcript or session) behind it to open.
-  if (typingOnly) {
-    return (
-      <div
-        className="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-full bg-background px-2 text-xs font-semibold leading-none text-muted-foreground"
-        data-testid="bot-activity-composer-typing"
-      >
-        {pillContent}
-      </div>
-    );
-  }
-
   return (
     <Popover
       onOpenChange={(nextOpen) => {
@@ -316,7 +293,7 @@ function BotActivityAgentPill({
       <PopoverTrigger asChild>
         <button
           aria-label={`${agent.name} is working. View activity.`}
-          className="inline-flex h-7 min-w-0 max-w-50 items-center gap-1.5 rounded-full border border-border/60 bg-background px-2 text-xs font-semibold leading-none text-muted-foreground shadow-xs transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:border-primary/40 data-[state=open]:bg-primary/10 data-[state=open]:text-primary"
+          className="inline-flex h-7 min-w-0 max-w-50 items-center gap-1.5 rounded-full border border-border/60 bg-background pl-0.75 pr-2 text-xs font-semibold leading-none text-muted-foreground shadow-xs transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:border-primary/40 data-[state=open]:bg-primary/10 data-[state=open]:text-primary"
           data-testid="bot-activity-composer-trigger"
           onBlur={hover.scheduleClose}
           onClick={(event) => {

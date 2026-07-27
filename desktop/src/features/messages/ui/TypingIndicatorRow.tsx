@@ -14,6 +14,8 @@ type TypingIndicatorRowProps = {
   channel: Channel | null;
   className?: string;
   currentPubkey?: string;
+  /** Extra classes for the "… is typing" label (e.g. weight overrides). */
+  labelClassName?: string;
   profiles?: UserProfileLookup;
   typingPubkeys: string[];
   variant?: "default" | "activity";
@@ -48,13 +50,14 @@ function formatTypingLabel(names: string[]) {
     return `${names[0]}, ${names[1]}, and ${names[2]} are typing...`;
   }
 
-  return `${names[0]}, ${names[1]}, and ${names.length - 2} others are typing...`;
+  return `${names[0]}, ${names[1]}, and ${names.length - 2} more are typing...`;
 }
 
 export function TypingIndicatorRow({
   channel,
   className,
   currentPubkey,
+  labelClassName,
   profiles,
   typingPubkeys,
   variant = "default",
@@ -129,6 +132,7 @@ export function TypingIndicatorRow({
               isActivityVariant
                 ? "text-2xs font-medium leading-3"
                 : "text-xs font-medium leading-4",
+              labelClassName,
             )}
             data-testid="message-typing-indicator-label"
           >
