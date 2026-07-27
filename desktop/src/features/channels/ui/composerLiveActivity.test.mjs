@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   deriveActivityPillLabel,
-  deriveAgentActivityOrder,
+  deriveAgentWorkingOrder,
   deriveLastLiveAt,
 } from "./composerLiveActivity.ts";
 
@@ -62,31 +62,21 @@ const assistantMessage = (id, text, timestamp, channelId = CHANNEL) => ({
 const secondsBeforeNow = (seconds) =>
   new Date(NOW - seconds * 1000).toISOString();
 
-test("deriveActivityPillLabel returns the newest fresh headline, no rotation", () => {
+test("deriveActivityPillLabel returns the newest headline, no rotation", () => {
   const editing = thought("Editing ChannelPane", secondsBeforeNow(2));
   const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
-    now: NOW,
     transcript: [thought("Reading files", secondsBeforeNow(4)), editing],
   });
   assert.deepEqual(headline, { id: editing.id, label: "Editing ChannelPane" });
 });
 
-test("deriveActivityPillLabel decays to null once the newest headline is stale", () => {
+test("deriveActivityPillLabel keeps the last action headline regardless of age", () => {
+  // A quiet stretch (long tool call, thinking gap) must NOT decay the label
+  // to the generic placeholder — the last real action stays informative.
+  const editing = thought("Editing ChannelPane", secondsBeforeNow(300));
   const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
-    now: NOW,
-    transcript: [thought("Editing ChannelPane", secondsBeforeNow(30))],
-  });
-  assert.equal(headline, null);
-});
-
-test("deriveActivityPillLabel honors a custom staleness window", () => {
-  const editing = thought("Editing ChannelPane", secondsBeforeNow(30));
-  const headline = deriveActivityPillLabel({
-    channelId: CHANNEL,
-    now: NOW,
-    staleAfterMs: 60_000,
     transcript: [editing],
   });
   assert.deepEqual(headline, { id: editing.id, label: "Editing ChannelPane" });
@@ -96,7 +86,6 @@ test("deriveActivityPillLabel ignores other-channel items", () => {
   const inChannel = thought("In-channel work", secondsBeforeNow(3));
   const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
-    now: NOW,
     transcript: [
       inChannel,
       thought("Other-channel work", secondsBeforeNow(1), OTHER_CHANNEL),
@@ -109,7 +98,6 @@ test("deriveActivityPillLabel lets spine work headline over fresher metadata rea
   const realWork = thought("Real work", secondsBeforeNow(4));
   const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
-    now: NOW,
     transcript: [realWork, metadata("Prompt context", secondsBeforeNow(1))],
   });
   assert.deepEqual(headline, { id: realWork.id, label: "Real work" });
@@ -119,7 +107,6 @@ test("deriveActivityPillLabel falls back to metadata when no spine items exist",
   const context = metadata("Prompt context", secondsBeforeNow(5));
   const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
-    now: NOW,
     transcript: [context],
   });
   assert.deepEqual(headline, { id: context.id, label: "Prompt context" });
@@ -128,7 +115,6 @@ test("deriveActivityPillLabel falls back to metadata when no spine items exist",
 test("deriveActivityPillLabel returns null for an empty transcript", () => {
   const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
-    now: NOW,
     transcript: [],
   });
   assert.equal(headline, null);
@@ -138,7 +124,6 @@ test("deriveActivityPillLabel never headlines usage/commands meta frames", () =>
   const realWork = thought("Real work", secondsBeforeNow(4));
   const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
-    now: NOW,
     transcript: [
       realWork,
       lifecycleMeta("usage_update", secondsBeforeNow(2)),
@@ -149,10 +134,9 @@ test("deriveActivityPillLabel never headlines usage/commands meta frames", () =>
   assert.deepEqual(headline, { id: realWork.id, label: "Real work" });
 });
 
-test("deriveActivityPillLabel returns null when only meta frames are fresh", () => {
+test("deriveActivityPillLabel returns null when only meta frames exist", () => {
   const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
-    now: NOW,
     transcript: [lifecycleMeta("usage_update", secondsBeforeNow(1))],
   });
   assert.equal(headline, null);
@@ -161,12 +145,10 @@ test("deriveActivityPillLabel returns null when only meta frames are fresh", () 
 test("deriveActivityPillLabel keeps a stable id while a message streams", () => {
   const first = deriveActivityPillLabel({
     channelId: CHANNEL,
-    now: NOW,
     transcript: [assistantMessage("msg-1", "Pass 1: reading", NOW_ISO)],
   });
   const extended = deriveActivityPillLabel({
     channelId: CHANNEL,
-    now: NOW,
     transcript: [
       assistantMessage("msg-1", "Pass 1: reading the composer wiring", NOW_ISO),
     ],
@@ -177,56 +159,114 @@ test("deriveActivityPillLabel keeps a stable id while a message streams", () => 
   assert.equal(extended.label, "Pass 1: reading the composer wiring");
 });
 
-test("deriveAgentActivityOrder puts the most recently active agent first", () => {
-  const transcripts = new Map([
-    ["alpha", [thought("Older work", secondsBeforeNow(20))]],
-    ["beta", [thought("Newer work", secondsBeforeNow(2))]],
+/** Fake working-state reader over pubkey → [{channelId, anchorAt}] entries. */
+const workingStates = (entries) => (pubkey) => ({
+  channels: entries.get(pubkey) ?? [],
+});
+
+test("deriveAgentWorkingOrder puts the earliest-started agent first", () => {
+  const states = new Map([
+    ["alpha", [{ channelId: CHANNEL, anchorAt: NOW - 20_000 }]],
+    ["beta", [{ channelId: CHANNEL, anchorAt: NOW - 90_000 }]],
   ]);
-  const order = deriveAgentActivityOrder({
+  const order = deriveAgentWorkingOrder({
     channelId: CHANNEL,
-    getTranscript: (pubkey) => transcripts.get(pubkey) ?? [],
+    getWorkingState: workingStates(states),
     pubkeys: ["alpha", "beta"],
   });
   assert.deepEqual(order, ["beta", "alpha"]);
 });
 
-test("deriveAgentActivityOrder keeps roster order for agents with no activity", () => {
-  const transcripts = new Map([
-    ["gamma", [thought("Only worker", secondsBeforeNow(5))]],
+test("deriveAgentWorkingOrder appends a later starter after existing workers", () => {
+  const states = new Map([
+    ["alpha", [{ channelId: CHANNEL, anchorAt: NOW - 60_000 }]],
+    ["beta", [{ channelId: CHANNEL, anchorAt: NOW - 30_000 }]],
+    ["gamma", [{ channelId: CHANNEL, anchorAt: NOW - 2_000 }]],
   ]);
-  const order = deriveAgentActivityOrder({
+  const order = deriveAgentWorkingOrder({
     channelId: CHANNEL,
-    getTranscript: (pubkey) => transcripts.get(pubkey) ?? [],
+    getWorkingState: workingStates(states),
+    // Roster order deliberately differs from start order.
+    pubkeys: ["gamma", "beta", "alpha"],
+  });
+  assert.deepEqual(order, ["alpha", "beta", "gamma"]);
+});
+
+test("deriveAgentWorkingOrder ignores other-channel anchors", () => {
+  const states = new Map([
+    ["alpha", [{ channelId: CHANNEL, anchorAt: NOW - 5_000 }]],
+    // Beta started much earlier — but in another channel, so it has no
+    // anchor for this scope and sorts to the end.
+    ["beta", [{ channelId: OTHER_CHANNEL, anchorAt: NOW - 300_000 }]],
+  ]);
+  const order = deriveAgentWorkingOrder({
+    channelId: CHANNEL,
+    getWorkingState: workingStates(states),
+    pubkeys: ["beta", "alpha"],
+  });
+  assert.deepEqual(order, ["alpha", "beta"]);
+});
+
+test("deriveAgentWorkingOrder uses the earliest anchor across channels when unscoped", () => {
+  const states = new Map([
+    [
+      "alpha",
+      [
+        { channelId: CHANNEL, anchorAt: NOW - 10_000 },
+        { channelId: OTHER_CHANNEL, anchorAt: NOW - 120_000 },
+      ],
+    ],
+    ["beta", [{ channelId: CHANNEL, anchorAt: NOW - 60_000 }]],
+  ]);
+  const order = deriveAgentWorkingOrder({
+    channelId: null,
+    getWorkingState: workingStates(states),
+    pubkeys: ["beta", "alpha"],
+  });
+  assert.deepEqual(order, ["alpha", "beta"]);
+});
+
+test("deriveAgentWorkingOrder keeps roster order for agents with no anchor", () => {
+  const states = new Map([
+    ["gamma", [{ channelId: CHANNEL, anchorAt: NOW - 5_000 }]],
+  ]);
+  const order = deriveAgentWorkingOrder({
+    channelId: CHANNEL,
+    getWorkingState: workingStates(states),
     pubkeys: ["alpha", "beta", "gamma"],
   });
   assert.deepEqual(order, ["gamma", "alpha", "beta"]);
 });
 
-test("deriveAgentActivityOrder ignores other-channel activity", () => {
-  const transcripts = new Map([
-    ["alpha", [thought("In-channel", secondsBeforeNow(30))]],
-    ["beta", [thought("Elsewhere", secondsBeforeNow(1), OTHER_CHANNEL)]],
-  ]);
-  const order = deriveAgentActivityOrder({
+test("deriveAgentWorkingOrder quantizes anchors to seconds so sub-second shifts never reorder", () => {
+  // Same wall-clock second; beta's anchor is a few hundred ms earlier (the
+  // shape of a retroactive clock-offset refinement). Order must follow the
+  // roster, and must not flip when the sub-second part changes.
+  const base = Math.floor((NOW - 10_000) / 1000) * 1000;
+  const order = deriveAgentWorkingOrder({
     channelId: CHANNEL,
-    getTranscript: (pubkey) => transcripts.get(pubkey) ?? [],
+    getWorkingState: workingStates(
+      new Map([
+        ["alpha", [{ channelId: CHANNEL, anchorAt: base + 700 }]],
+        ["beta", [{ channelId: CHANNEL, anchorAt: base + 100 }]],
+      ]),
+    ),
     pubkeys: ["alpha", "beta"],
   });
   assert.deepEqual(order, ["alpha", "beta"]);
-});
 
-test("deriveAgentActivityOrder is stable for identical timestamps", () => {
-  const sameTime = secondsBeforeNow(3);
-  const transcripts = new Map([
-    ["alpha", [thought("Tied A", sameTime)]],
-    ["beta", [thought("Tied B", sameTime)]],
-  ]);
-  const order = deriveAgentActivityOrder({
+  const afterRefinement = deriveAgentWorkingOrder({
     channelId: CHANNEL,
-    getTranscript: (pubkey) => transcripts.get(pubkey) ?? [],
+    getWorkingState: workingStates(
+      new Map([
+        // Alpha's offset estimate tightened: anchor slid 400ms earlier.
+        ["alpha", [{ channelId: CHANNEL, anchorAt: base + 300 }]],
+        ["beta", [{ channelId: CHANNEL, anchorAt: base + 100 }]],
+      ]),
+    ),
     pubkeys: ["alpha", "beta"],
   });
-  assert.deepEqual(order, ["alpha", "beta"]);
+  assert.deepEqual(afterRefinement, order);
 });
 
 test("deriveLastLiveAt prefers the newest channel-scoped transcript item", () => {

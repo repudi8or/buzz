@@ -2,21 +2,20 @@ import * as React from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import {
-  getAgentTranscript,
-  subscribeAgentObserverStore,
-} from "@/features/agents/observerRelayStore";
+  getAgentWorkingState,
+  subscribeAgentWorkingSignal,
+} from "@/features/agents/agentWorkingSignal";
 import { useAgentTranscript } from "@/features/agents/ui/useObserverEvents";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { ManagedAgent } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
-import { useNow } from "@/shared/lib/useNow";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Shimmer } from "@/shared/ui/Shimmer";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { ComposerLiveActivityFeed } from "./ComposerLiveActivityFeed";
 import {
   deriveActivityPillLabel,
-  deriveAgentActivityOrder,
+  deriveAgentWorkingOrder,
 } from "./composerLiveActivity";
 
 export type BotActivityAgent = Pick<ManagedAgent, "pubkey" | "name" | "status">;
@@ -31,23 +30,13 @@ type BotActivityBarProps = {
 
 const HOVER_OPEN_DELAY_MS = 150;
 const HOVER_CLOSE_DELAY_MS = 180;
-/**
- * Re-render cadence for the pill label's staleness check. One second so the
- * decay to the generic label lands promptly after the stale window elapses.
- */
-const PILL_LABEL_TICK_MS = 1_000;
-/** Ticker key for the generic label so decay/recovery animate as one swap. */
+/** Ticker key for the generic label shown before the first action lands. */
 const GENERIC_LABEL_ID = "generic-working";
 /**
  * Perceptual duration shared by the pill reorder spring and the opacity dip
  * keyframes so the fade lands together with the layout switch.
  */
 const PILL_REORDER_DURATION_S = 0.9;
-
-// Stable subscribe reference for useSyncExternalStore (same pattern as
-// useObserverEvents).
-const subscribeToObserverStore = (onStoreChange: () => void) =>
-  subscribeAgentObserverStore(onStoreChange);
 
 /**
  * Strip-level hover popover state: ONE active pill and ONE timer for the
@@ -196,9 +185,11 @@ function useStripHoverPopover(): StripHoverPopover {
 
 /**
  * One working agent's status pill: avatar + the agent's latest action summary
- * (decaying to a generic working label when activity goes quiet). Label
- * updates play as a clipped ticker — the new text pushes the old text up and
- * out — deferred until the pill's slot settles when a reorder is in flight.
+ * (a generic working label until the first action lands; after that the last
+ * action persists — during a quiet stretch, what the agent last did is more
+ * informative than a generic placeholder). Label updates play as a clipped
+ * ticker — the new text pushes the old text up and out — deferred until the
+ * pill's slot settles when a reorder is in flight.
  * Hovering shows the agent's live activity feed as the popover surface
  * itself — flat, no inset box, no tab strip — while clicking the pill opens
  * the agent's full runtime in the auxiliary panel.
@@ -233,14 +224,13 @@ function BotActivityAgentPill({
   const open = hover.activePubkey === pillKey;
   const shouldReduceMotion = useReducedMotion();
   const transcript = useAgentTranscript(true, agent.pubkey);
-  const now = useNow(PILL_LABEL_TICK_MS);
   const headline = React.useMemo(
-    () => deriveActivityPillLabel({ channelId, now, transcript }),
-    [channelId, now, transcript],
+    () => deriveActivityPillLabel({ channelId, transcript }),
+    [channelId, transcript],
   );
   const activeId = headline?.id ?? GENERIC_LABEL_ID;
-  // No fresh action headline (see deriveActivityPillLabel) — decay to the
-  // agent-named generic working label.
+  // No action headline yet (see deriveActivityPillLabel) — show the
+  // agent-named generic working label until the first action lands.
   const activeLabel = headline?.label ?? `${agent.name} is working…`;
   // The rendered label lags the derived one while the pill is moving: the
   // push-up ticker plays after the slot settles (or immediately when idle).
@@ -461,11 +451,14 @@ function AnimatedPillSlot({
 /**
  * Composer status strip for working agents: one pill per working agent,
  * sharing one strip-level hover popover (at most one card open). Pills are
- * ordered most-recently-active first (left-most) and animate to their new
- * slot as the order changes — except while the cursor is over the bar or a
- * hover card is showing, when order, membership, layout animation, and pill
- * widths are all frozen so nothing can move out from under (or slide under)
- * the cursor. Each pill truncates its label at its own max width. A lone
+ * ordered by turn start (earliest worker left-most) — a stable slot for the
+ * whole turn, so liveness is carried by each pill's label ticker while
+ * positional motion is reserved for membership changes: a newly working
+ * agent's pill enters on the right, a finished agent's pill exits and its
+ * neighbors animate into the gap. No movement happens while the cursor is
+ * over the bar or a hover card is showing, when order, membership, layout
+ * animation, and pill widths are all frozen so nothing can move out from
+ * under (or slide under) the cursor. Each pill truncates its label at its own max width. A lone
  * pill shrinks with a narrow container (its label ellipsizes) so it always
  * fits; when SEVERAL pills outgrow a narrow container (thread panel
  * toolbars especially) the strip scrolls horizontally — scrollbar hidden,
@@ -503,20 +496,23 @@ export function BotActivityComposerAction({
     return agents.filter((agent) => workingSet.has(agent.pubkey.toLowerCase()));
   }, [agents, workingBotPubkeys]);
 
-  // Most-recent-first pill order. The snapshot is a joined string so
+  // Turn-start pill order (earliest worker left-most, new agents append on
+  // the right). Anchored to when each agent STARTED working — stable for the
+  // whole turn — so pills never shuffle on transcript activity; only
+  // membership changes move slots. The snapshot is a joined string so
   // useSyncExternalStore only re-renders this strip when the ORDER actually
-  // changes, not on every observer store write.
+  // changes, not on every working-signal write.
   const getOrderSnapshot = React.useCallback(
     () =>
-      deriveAgentActivityOrder({
+      deriveAgentWorkingOrder({
         channelId,
-        getTranscript: (pubkey) => getAgentTranscript(pubkey, true),
+        getWorkingState: (pubkey) => getAgentWorkingState(pubkey, channelId),
         pubkeys: workingAgents.map((agent) => agent.pubkey.toLowerCase()),
       }).join(","),
     [channelId, workingAgents],
   );
   const orderKey = React.useSyncExternalStore(
-    subscribeToObserverStore,
+    subscribeAgentWorkingSignal,
     getOrderSnapshot,
   );
   const liveOrderedAgents = React.useMemo(() => {
@@ -530,9 +526,10 @@ export function BotActivityComposerAction({
 
   // While the hold is active, the strip must not move under the cursor:
   // pill order AND membership are frozen at their last hold-free values.
-  // Reorders queue up behind the hold and apply when it releases; an agent
-  // that finishes mid-hold keeps its pill until then. Without this, a
-  // reorder slides the hovered pill away (firing a spurious mouseleave that
+  // Membership changes (the only source of slot movement under turn-start
+  // ordering) queue up behind the hold and apply when it releases; an agent
+  // that finishes mid-hold keeps its pill until then. Without this, a pill
+  // exiting slides the hovered pill away (firing a spurious mouseleave that
   // closes the card) or slides a different pill under the cursor (opening
   // the wrong one).
   //
