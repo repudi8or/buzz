@@ -291,7 +291,12 @@ function BotActivityAgentPill({
         displayName={agent.name}
         size="xs"
       />
-      <span className="relative block h-3.5 min-w-0 flex-1 overflow-hidden">
+      {/* Ticker viewport: 16px tall with a matching 16px line box (leading-4
+          overrides the button's leading-none). Inter's ascent+descent ink is
+          ~1.21em (~14.5px at text-xs) — taller than a leading-none line box —
+          and BOTH this span and the truncate span clip to their boxes, which
+          sheared descenders ("g", "y") off the label. */}
+      <span className="relative block h-4 min-w-0 flex-1 overflow-hidden leading-4">
         <AnimatePresence initial={false} mode="popLayout">
           <motion.span
             animate={{ y: 0 }}
@@ -466,7 +471,9 @@ function AnimatedPillSlot({
  * toolbars especially) the strip scrolls horizontally — scrollbar hidden,
  * with edge gradient fades signalling the pills off view — instead of
  * compressing every pill into an unreadable sliver or wrapping the
- * fixed-height row.
+ * fixed-height row. The scroll viewport bleeds across the mounting row's
+ * gutter so the clip line and its fades sit at the container's visual
+ * edges, never mid-row on a pill.
  */
 export function BotActivityComposerAction({
   agents,
@@ -555,7 +562,15 @@ export function BotActivityComposerAction({
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: hover-only hold — keyboard focus drives the same hold via the pill triggers.
     <div
-      className="relative min-w-0 flex-1"
+      // Full-bleed scroll viewport: -mx-5 cancels the mounting row's px-5
+      // gutter (ChannelComposerActivityRow and the thread panel's
+      // THREAD_PANEL_COMPOSER_GUTTER_CLASS — change together) and the
+      // scroller re-adds it as internal padding. Overflowing pills then clip
+      // at the CONTAINER's visual edge — where the edge fades sit — instead
+      // of getting cut at the padded content box, 20px shy of the edge with
+      // a dead gutter after the fade. At rest nothing changes: the padding
+      // keeps the first pill aligned to the gutter.
+      className="relative -mx-5 min-w-0 flex-1"
       data-testid="bot-activity-strip"
       onMouseEnter={() => setBarHovered(true)}
       onMouseLeave={() => setBarHovered(false)}
@@ -564,9 +579,10 @@ export function BotActivityComposerAction({
           strip is scrolled — motion measures positions relative to the
           scroll offset instead of jumping. The negative-margin/padding pair
           gives focus rings and pill shadows room inside the clip box
-          without changing the row's height. */}
+          without changing the row's height. px-5 restores the row gutter
+          inside the full-bleed viewport (see the wrapper above). */}
       <motion.div
-        className="-my-1 flex items-center overflow-x-auto overscroll-x-contain py-1 scrollbar-none [&::-webkit-scrollbar]:hidden"
+        className="-my-1 flex items-center overflow-x-auto overscroll-x-contain px-5 py-1 scrollbar-none [&::-webkit-scrollbar]:hidden"
         data-testid="bot-activity-strip-scroller"
         layoutScroll
         onScroll={updateFades}
@@ -602,18 +618,20 @@ export function BotActivityComposerAction({
       </motion.div>
       {/* Edge fades: obvious "more pills off view" affordance. Rendered only
           for a side that actually has clipped content, so they never dim a
-          fully visible strip. */}
+          fully visible strip. They sit at the full-bleed viewport's edges —
+          the container's visual edges — and w-12 spans the 20px gutter plus
+          a soft zone over the pills scrolling under it. */}
       {fades.start ? (
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-8 bg-linear-to-r from-background via-background/60 to-transparent"
+          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-linear-to-r from-background via-background/60 to-transparent"
           data-testid="bot-activity-strip-fade-start"
         />
       ) : null}
       {fades.end ? (
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-8 bg-linear-to-l from-background via-background/60 to-transparent"
+          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-linear-to-l from-background via-background/60 to-transparent"
           data-testid="bot-activity-strip-fade-end"
         />
       ) : null}

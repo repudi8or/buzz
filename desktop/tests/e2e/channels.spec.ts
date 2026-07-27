@@ -2482,12 +2482,39 @@ test("narrow strip scrolls horizontally with edge fades instead of compressing p
     0,
   );
 
+  // The fade sits at the CONTAINER's visual edge, not at the row's padded
+  // content box: the full-bleed viewport cancels the row's px-5 gutter, so
+  // pills scroll all the way under a gradient pinned to the row's border
+  // box instead of getting cut mid-row with a dead gutter after the fade.
+  const rowBox = await page
+    .getByTestId("channel-composer-activity-row")
+    .boundingBox();
+  const fadeEndBox = await page
+    .getByTestId("bot-activity-strip-fade-end")
+    .boundingBox();
+  expect(fadeEndBox).not.toBeNull();
+  expect(rowBox).not.toBeNull();
+  if (fadeEndBox && rowBox) {
+    expect(
+      Math.abs(fadeEndBox.x + fadeEndBox.width - (rowBox.x + rowBox.width)),
+    ).toBeLessThanOrEqual(1);
+  }
+
   // Scrolling to the far end swaps the fades to the leading side.
   await scroller.evaluate((el) => {
     el.scrollLeft = el.scrollWidth;
   });
   await expect(page.getByTestId("bot-activity-strip-fade-start")).toBeVisible();
   await expect(page.getByTestId("bot-activity-strip-fade-end")).toHaveCount(0);
+
+  // Same pinning on the leading edge once scrolled.
+  const fadeStartBox = await page
+    .getByTestId("bot-activity-strip-fade-start")
+    .boundingBox();
+  expect(fadeStartBox).not.toBeNull();
+  if (fadeStartBox && rowBox) {
+    expect(Math.abs(fadeStartBox.x - rowBox.x)).toBeLessThanOrEqual(1);
+  }
 });
 
 test("lone pill shrinks to fit a narrow container without scroll fades", async ({
