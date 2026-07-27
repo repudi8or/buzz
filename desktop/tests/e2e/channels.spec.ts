@@ -2066,6 +2066,51 @@ test("shows and clears activity indicators for active channel agents", async ({
   );
 });
 
+test("composer does not shift when the activity row mounts and clears", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  await page.getByTestId("channel-agents").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("agents");
+  await waitForMockLiveSubscription(page, "agents", KIND_TYPING_INDICATOR);
+
+  // The activity row below the composer has a fixed height (h-8.5 in
+  // ChannelComposerActivityRow) so the bottom-anchored composer must not move
+  // when the bot-activity trigger mounts into it or clears from it.
+  const composerBox = async () => {
+    const box = await page.getByTestId("message-composer").boundingBox();
+    if (!box) {
+      throw new Error("Composer is not visible.");
+    }
+    return box;
+  };
+  const idleComposerTop = (await composerBox()).y;
+
+  await page.evaluate((pubkey) => {
+    window.__BUZZ_E2E_EMIT_MOCK_TYPING__?.({
+      channelName: "agents",
+      pubkey,
+    });
+  }, TEST_IDENTITIES.alice.pubkey);
+
+  await expect(page.getByTestId("bot-activity-composer-trigger")).toBeVisible();
+  expect((await composerBox()).y).toBeCloseTo(idleComposerTop, 0);
+
+  await page.evaluate((pubkey) => {
+    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "agents",
+      content: "Done.",
+      pubkey,
+    });
+  }, TEST_IDENTITIES.alice.pubkey);
+
+  await expect(page.getByTestId("bot-activity-composer-trigger")).toHaveCount(
+    0,
+  );
+  expect((await composerBox()).y).toBeCloseTo(idleComposerTop, 0);
+});
+
 test("members sidebar exposes view-activity for a viewer-owned relay agent", async ({
   page,
 }) => {

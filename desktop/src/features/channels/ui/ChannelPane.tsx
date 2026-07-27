@@ -39,7 +39,8 @@ import { useFocusDrawerPresence } from "@/features/channels/ui/useFocusDrawerPre
 import { useChannelWorkingAgentPubkeys } from "@/features/agents/agentWorkingSignal";
 import { useCardMintJobs } from "@/features/agents/cardMintStore";
 import { BotActivityComposerAction } from "@/features/channels/ui/BotActivityBar";
-import { ChannelComposerActivityAccessory } from "@/features/channels/ui/ChannelComposerActivityAccessory";
+import { ChannelComposerActivityRow } from "@/features/channels/ui/ChannelComposerActivityRow";
+import { ComposerActivityAccessory } from "@/features/messages/ui/ComposerActivityAccessory";
 import {
   containsWelcomePersonaMention,
   WelcomeComposerBanner,
@@ -797,17 +798,17 @@ export const ChannelPane = React.memo(function ChannelPane({
                     bottom rail, so fading it cannot change the observed
                     overlay height or move the conversation. Its natural
                     content height remains responsive. */}
-                <ChannelComposerActivityAccessory
-                  agents={activityAgents}
-                  channel={activeChannel}
-                  currentPubkey={currentPubkey}
-                  onOpenAgentSession={onOpenAgentSession}
-                  openAgentSessionPubkey={openAgentSessionPubkey}
-                  profiles={profiles}
-                  typingPubkeys={typingPubkeys}
-                  visible={hasComposerBottomActivity}
-                  workingBotPubkeys={composerWorkingBotPubkeys}
-                />
+                <ComposerActivityAccessory visible={hasComposerBottomActivity}>
+                  <ChannelComposerActivityRow
+                    agents={activityAgents}
+                    channel={activeChannel}
+                    currentPubkey={currentPubkey}
+                    onOpenAgentSession={onOpenAgentSession}
+                    openAgentSessionPubkey={openAgentSessionPubkey}
+                    profiles={profiles}
+                    typingPubkeys={typingPubkeys}
+                  />
+                </ComposerActivityAccessory>
               </div>
             </div>
           )}
