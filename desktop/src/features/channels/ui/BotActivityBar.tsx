@@ -1,6 +1,11 @@
 import * as React from "react";
 import { Loader2 } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
+import {
+  getAgentTranscript,
+  subscribeAgentObserverStore,
+} from "@/features/agents/observerRelayStore";
 import { useAgentTranscript } from "@/features/agents/ui/useObserverEvents";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { ManagedAgent } from "@/shared/api/types";
@@ -11,7 +16,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Shimmer } from "@/shared/ui/Shimmer";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { ComposerLiveActivityFeed } from "./ComposerLiveActivityFeed";
-import { deriveActivityPillLabel } from "./composerLiveActivity";
+import {
+  deriveActivityPillLabel,
+  deriveAgentActivityOrder,
+} from "./composerLiveActivity";
 
 export type BotActivityAgent = Pick<ManagedAgent, "pubkey" | "name" | "status">;
 
@@ -30,6 +38,18 @@ const HOVER_CLOSE_DELAY_MS = 180;
 const PILL_LABEL_TICK_MS = 5_000;
 /** Shown when no fresh action headline exists (see deriveActivityPillLabel). */
 const GENERIC_WORKING_LABEL = "Working…";
+/** Ticker key for the generic label so decay/recovery animate as one swap. */
+const GENERIC_LABEL_ID = "generic-working";
+/**
+ * Perceptual duration shared by the pill reorder spring and the opacity dip
+ * keyframes so the fade lands together with the layout switch.
+ */
+const PILL_REORDER_DURATION_S = 0.9;
+
+// Stable subscribe reference for useSyncExternalStore (same pattern as
+// useObserverEvents).
+const subscribeToObserverStore = (onStoreChange: () => void) =>
+  subscribeAgentObserverStore(onStoreChange);
 
 /** Hover-intent popover state shared by every activity pill. */
 function useHoverPopover() {
@@ -68,16 +88,20 @@ function useHoverPopover() {
 
 /**
  * One working agent's status pill: avatar + the agent's latest action summary
- * (decaying to a generic working label when activity goes quiet). Hovering
- * shows the agent's live activity feed as the popover surface itself — flat,
- * no inset box, no tab strip — while clicking the pill opens the agent's full
- * runtime in the auxiliary panel. With the `composerLiveActivity` preview
- * flag off, the hover popover keeps the legacy "View activity" item instead.
+ * (decaying to a generic working label when activity goes quiet). Label
+ * updates play as a clipped ticker — the new text pushes the old text up and
+ * out — deferred until the pill's slot settles when a reorder is in flight.
+ * Hovering shows the agent's live activity feed as the popover surface
+ * itself — flat, no inset box, no tab strip — while clicking the pill opens
+ * the agent's full runtime in the auxiliary panel. With the
+ * `composerLiveActivity` preview flag off, the hover popover keeps the
+ * legacy "View activity" item instead.
  */
 function BotActivityAgentPill({
   agent,
   avatarUrl,
   channelId,
+  holdLabelSwap,
   liveActivityEnabled,
   onOpenAgentSession,
   openAgentSessionPubkey,
@@ -86,6 +110,8 @@ function BotActivityAgentPill({
   agent: BotActivityAgent;
   avatarUrl: string | null;
   channelId: string | null;
+  /** Defer label swaps while the pill's slot is mid layout animation. */
+  holdLabelSwap: boolean;
   liveActivityEnabled: boolean;
   onOpenAgentSession: (pubkey: string, channelId?: string | null) => void;
   openAgentSessionPubkey: string | null;
@@ -93,13 +119,33 @@ function BotActivityAgentPill({
 }) {
   const { clearHoverTimer, closeWithDelay, open, openWithDelay, setOpen } =
     useHoverPopover();
+  const shouldReduceMotion = useReducedMotion();
   const transcript = useAgentTranscript(true, agent.pubkey);
   const now = useNow(PILL_LABEL_TICK_MS);
   const headline = React.useMemo(
     () => deriveActivityPillLabel({ channelId, now, transcript }),
     [channelId, now, transcript],
   );
-  const label = headline ?? GENERIC_WORKING_LABEL;
+  const activeId = headline?.id ?? GENERIC_LABEL_ID;
+  const activeLabel = headline?.label ?? GENERIC_WORKING_LABEL;
+  // The rendered label lags the derived one while the pill is moving: the
+  // push-up ticker plays after the slot settles (or immediately when idle).
+  // Keyed by transcript item id, not label text — a NEW action swaps, while
+  // streamed chunks growing the same item update text in place.
+  const [display, setDisplay] = React.useState({
+    id: activeId,
+    label: activeLabel,
+  });
+  React.useEffect(() => {
+    if (holdLabelSwap) {
+      return;
+    }
+    setDisplay((current) =>
+      current.id === activeId && current.label === activeLabel
+        ? current
+        : { id: activeId, label: activeLabel },
+    );
+  }, [holdLabelSwap, activeId, activeLabel]);
   const isSessionOpen =
     openAgentSessionPubkey?.toLowerCase() === agent.pubkey.toLowerCase();
 
@@ -114,7 +160,7 @@ function BotActivityAgentPill({
       <PopoverTrigger asChild>
         <button
           aria-label={`${agent.name} is working. View activity.`}
-          className="inline-flex h-7 min-w-0 max-w-30 items-center gap-1.5 rounded-full border border-border/60 bg-background px-2 text-xs font-semibold leading-none text-muted-foreground shadow-xs transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:border-primary/40 data-[state=open]:bg-primary/10 data-[state=open]:text-primary"
+          className="inline-flex h-7 min-w-0 max-w-36 items-center gap-1.5 rounded-full border border-border/60 bg-background px-2 text-xs font-semibold leading-none text-muted-foreground shadow-xs transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:border-primary/40 data-[state=open]:bg-primary/10 data-[state=open]:text-primary"
           data-testid="bot-activity-composer-trigger"
           onBlur={closeWithDelay}
           onClick={(event) => {
@@ -135,8 +181,25 @@ function BotActivityAgentPill({
             displayName={agent.name}
             size="xs"
           />
-          <span className="min-w-0 flex-1 overflow-hidden">
-            <Shimmer className="block truncate">{label}</Shimmer>
+          <span className="relative block h-3.5 min-w-0 flex-1 overflow-hidden">
+            <AnimatePresence initial={false} mode="popLayout">
+              <motion.span
+                animate={{ y: 0 }}
+                className="flex h-full items-center"
+                exit={{ y: "-110%" }}
+                initial={shouldReduceMotion ? false : { y: "110%" }}
+                key={display.id}
+                transition={
+                  shouldReduceMotion
+                    ? { duration: 0 }
+                    : { type: "tween", duration: 0.28, ease: "easeOut" }
+                }
+              >
+                <Shimmer className="block min-w-0 truncate">
+                  {display.label}
+                </Shimmer>
+              </motion.span>
+            </AnimatePresence>
           </span>
         </button>
       </PopoverTrigger>
@@ -190,9 +253,57 @@ function BotActivityAgentPill({
 }
 
 /**
+ * Layout slot for one pill in the composer strip. While a pill travels to a
+ * new slot (layout animation) its opacity dips and recovers via keyframes
+ * that run for the same duration as the slot spring, so the fade and the
+ * move finish together and reorders read as a shuffle instead of a hard
+ * swap. Enter/exit use the same scale+fade treatment.
+ */
+function AnimatedPillSlot({
+  children,
+  shouldReduceMotion,
+}: {
+  /** Render prop so the pill can defer label swaps while its slot moves. */
+  children: (isMoving: boolean) => React.ReactNode;
+  shouldReduceMotion: boolean;
+}) {
+  const [isMoving, setIsMoving] = React.useState(false);
+
+  return (
+    <motion.div
+      animate={{ opacity: isMoving ? [1, 0.35, 1] : 1, scale: 1 }}
+      className="flex min-w-0"
+      exit={{ opacity: 0, scale: 0.9 }}
+      initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.9 }}
+      layout={!shouldReduceMotion}
+      onLayoutAnimationComplete={() => setIsMoving(false)}
+      onLayoutAnimationStart={() => setIsMoving(true)}
+      transition={
+        shouldReduceMotion
+          ? { duration: 0 }
+          : {
+              type: "spring",
+              duration: PILL_REORDER_DURATION_S,
+              bounce: 0.15,
+              opacity: {
+                type: "tween",
+                duration: PILL_REORDER_DURATION_S,
+                ease: "linear",
+              },
+            }
+      }
+    >
+      {children(isMoving)}
+    </motion.div>
+  );
+}
+
+/**
  * Composer status strip for working agents: one pill per working agent, each
- * owning its hover popover. Pills shrink and truncate their labels when
- * several agents work at once so the strip never wraps the fixed-height row.
+ * owning its hover popover. Pills are ordered most-recently-active first
+ * (left-most) and animate to their new slot as the order changes. Pills
+ * shrink and truncate their labels when several agents work at once so the
+ * strip never wraps the fixed-height row.
  */
 export function BotActivityComposerAction({
   agents,
@@ -203,6 +314,7 @@ export function BotActivityComposerAction({
   workingBotPubkeys,
 }: BotActivityBarProps) {
   const liveActivityEnabled = useFeatureEnabled("composerLiveActivity");
+  const shouldReduceMotion = useReducedMotion();
 
   const workingAgents = React.useMemo(() => {
     const workingSet = new Set(
@@ -212,24 +324,60 @@ export function BotActivityComposerAction({
     return agents.filter((agent) => workingSet.has(agent.pubkey.toLowerCase()));
   }, [agents, workingBotPubkeys]);
 
-  if (workingAgents.length === 0) {
+  // Most-recent-first pill order. The snapshot is a joined string so
+  // useSyncExternalStore only re-renders this strip when the ORDER actually
+  // changes, not on every observer store write.
+  const getOrderSnapshot = React.useCallback(
+    () =>
+      deriveAgentActivityOrder({
+        channelId,
+        getTranscript: (pubkey) => getAgentTranscript(pubkey, true),
+        pubkeys: workingAgents.map((agent) => agent.pubkey.toLowerCase()),
+      }).join(","),
+    [channelId, workingAgents],
+  );
+  const orderKey = React.useSyncExternalStore(
+    subscribeToObserverStore,
+    getOrderSnapshot,
+  );
+  const orderedAgents = React.useMemo(() => {
+    const byPubkey = new Map(
+      workingAgents.map((agent) => [agent.pubkey.toLowerCase(), agent]),
+    );
+    return orderKey === ""
+      ? []
+      : orderKey.split(",").flatMap((pubkey) => byPubkey.get(pubkey) ?? []);
+  }, [orderKey, workingAgents]);
+
+  if (orderedAgents.length === 0) {
     return null;
   }
 
   return (
     <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-visible">
-      {workingAgents.map((agent) => (
-        <BotActivityAgentPill
-          agent={agent}
-          avatarUrl={profiles?.[agent.pubkey.toLowerCase()]?.avatarUrl ?? null}
-          channelId={channelId}
-          key={agent.pubkey}
-          liveActivityEnabled={liveActivityEnabled}
-          onOpenAgentSession={onOpenAgentSession}
-          openAgentSessionPubkey={openAgentSessionPubkey}
-          profiles={profiles}
-        />
-      ))}
+      <AnimatePresence initial={false}>
+        {orderedAgents.map((agent) => (
+          <AnimatedPillSlot
+            key={agent.pubkey}
+            shouldReduceMotion={Boolean(shouldReduceMotion)}
+          >
+            {(isMoving) => (
+              <BotActivityAgentPill
+                agent={agent}
+                avatarUrl={
+                  profiles?.[agent.pubkey.toLowerCase()]?.avatarUrl ?? null
+                }
+                channelId={channelId}
+                holdLabelSwap={isMoving}
+                liveActivityEnabled={liveActivityEnabled}
+                onOpenAgentSession={onOpenAgentSession}
+                openAgentSessionPubkey={openAgentSessionPubkey}
+                profiles={profiles}
+              />
+            )}
+          </AnimatedPillSlot>
+        ))}
+      </AnimatePresence>
     </div>
   );
 }

@@ -12,6 +12,26 @@ import type { TranscriptItem } from "@/features/agents/ui/agentSessionTypes";
 export const ACTIVITY_PILL_STALE_MS = 15_000;
 
 /**
+ * Lifecycle meta-frames that must never headline the pill. They pass the
+ * spine filter (meaningful lifecycle items) but would surface as bare
+ * "Usage" / "Commands" labels that read like phantom activity.
+ */
+const PILL_HEADLINE_EXCLUDED_SOURCES = new Set([
+  "usage_update",
+  "available_commands_update",
+]);
+
+export type ActivityPillHeadline = {
+  /**
+   * Transcript item id backing the headline. The pill keys its ticker swap
+   * on this id, so a NEW action animates while streamed chunks that grow the
+   * same item (message first line, thought text) update text in place.
+   */
+  id: string;
+  label: string;
+};
+
+/**
  * Latest fresh action headline for a working agent's composer pill.
  *
  * Channel-scoped, two-tier scan (spine items headline over metadata reads,
@@ -30,7 +50,7 @@ export function deriveActivityPillLabel({
   now: number;
   staleAfterMs?: number;
   transcript: readonly TranscriptItem[];
-}): string | null {
+}): ActivityPillHeadline | null {
   const scoped = channelId
     ? transcript.filter((item) => item.channelId === channelId)
     : transcript;
@@ -41,6 +61,13 @@ export function deriveActivityPillLabel({
     if (!item || !passFilter(item)) {
       continue;
     }
+    if (
+      item.type === "lifecycle" &&
+      item.acpSource !== undefined &&
+      PILL_HEADLINE_EXCLUDED_SOURCES.has(item.acpSource)
+    ) {
+      continue;
+    }
     const headline = getActivityHeadline(item);
     if (!headline) {
       continue;
@@ -49,10 +76,52 @@ export function deriveActivityPillLabel({
     if (!Number.isNaN(millis) && now - millis > staleAfterMs) {
       return null;
     }
-    return headline;
+    return { id: item.id, label: headline };
   }
 
   return null;
+}
+
+/**
+ * Working-agent pill order for the composer strip: agents with the newest
+ * channel-scoped transcript activity first (left-most). Agents with no
+ * recorded activity keep their incoming (roster) order at the end — the
+ * sort is stable, so ties never reshuffle.
+ *
+ * `getTranscript` is injected so the helper stays pure and unit-testable;
+ * callers pass the observer store's cached reader.
+ */
+export function deriveAgentActivityOrder({
+  channelId,
+  getTranscript,
+  pubkeys,
+}: {
+  channelId: string | null;
+  getTranscript: (pubkey: string) => readonly TranscriptItem[];
+  pubkeys: readonly string[];
+}): string[] {
+  const lastActivityAt = new Map<string, number>();
+
+  for (const pubkey of pubkeys) {
+    const transcript = getTranscript(pubkey);
+    for (let index = transcript.length - 1; index >= 0; index -= 1) {
+      const item = transcript[index];
+      if (!item || (channelId && item.channelId !== channelId)) {
+        continue;
+      }
+      const millis = Date.parse(item.timestamp);
+      if (!Number.isNaN(millis)) {
+        lastActivityAt.set(pubkey, millis);
+        break;
+      }
+    }
+  }
+
+  return [...pubkeys].sort(
+    (a, b) =>
+      (lastActivityAt.get(b) ?? Number.NEGATIVE_INFINITY) -
+      (lastActivityAt.get(a) ?? Number.NEGATIVE_INFINITY),
+  );
 }
 
 /**

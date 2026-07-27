@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   deriveActivityPillLabel,
+  deriveAgentActivityOrder,
   deriveLastLiveAt,
 } from "./composerLiveActivity.ts";
 
@@ -10,6 +11,7 @@ const CHANNEL = "channel-1";
 const OTHER_CHANNEL = "channel-2";
 
 const NOW = Date.parse("2026-07-23T00:01:00.000Z");
+const NOW_ISO = new Date(NOW).toISOString();
 
 /** Thought item: spine, headlined by its title. */
 const thought = (title, timestamp, channelId = CHANNEL) => ({
@@ -34,81 +36,197 @@ const metadata = (title, timestamp, channelId = CHANNEL) => ({
   channelId,
 });
 
+/** Lifecycle meta-frame (usage tick / commands): spine, but never a headline. */
+const lifecycleMeta = (acpSource, timestamp, channelId = CHANNEL) => ({
+  id: `lifecycle-${acpSource}-${timestamp}`,
+  type: "lifecycle",
+  renderClass: "status",
+  title: acpSource === "usage_update" ? "Usage" : "Commands",
+  text: "Tokens: 1200/8192",
+  timestamp,
+  acpSource,
+  channelId,
+});
+
+/** Streaming assistant message: headline is the (growing) first line. */
+const assistantMessage = (id, text, timestamp, channelId = CHANNEL) => ({
+  id,
+  type: "message",
+  role: "assistant",
+  title: "",
+  text,
+  timestamp,
+  channelId,
+});
+
 const secondsBeforeNow = (seconds) =>
   new Date(NOW - seconds * 1000).toISOString();
 
 test("deriveActivityPillLabel returns the newest fresh headline, no rotation", () => {
-  const label = deriveActivityPillLabel({
+  const editing = thought("Editing ChannelPane", secondsBeforeNow(2));
+  const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
     now: NOW,
-    transcript: [
-      thought("Reading files", secondsBeforeNow(8)),
-      thought("Editing ChannelPane", secondsBeforeNow(2)),
-    ],
+    transcript: [thought("Reading files", secondsBeforeNow(8)), editing],
   });
-  assert.equal(label, "Editing ChannelPane");
+  assert.deepEqual(headline, { id: editing.id, label: "Editing ChannelPane" });
 });
 
 test("deriveActivityPillLabel decays to null once the newest headline is stale", () => {
-  const label = deriveActivityPillLabel({
+  const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
     now: NOW,
     transcript: [thought("Editing ChannelPane", secondsBeforeNow(30))],
   });
-  assert.equal(label, null);
+  assert.equal(headline, null);
 });
 
 test("deriveActivityPillLabel honors a custom staleness window", () => {
-  const transcript = [thought("Editing ChannelPane", secondsBeforeNow(30))];
-  const label = deriveActivityPillLabel({
+  const editing = thought("Editing ChannelPane", secondsBeforeNow(30));
+  const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
     now: NOW,
     staleAfterMs: 60_000,
-    transcript,
+    transcript: [editing],
   });
-  assert.equal(label, "Editing ChannelPane");
+  assert.deepEqual(headline, { id: editing.id, label: "Editing ChannelPane" });
 });
 
 test("deriveActivityPillLabel ignores other-channel items", () => {
-  const label = deriveActivityPillLabel({
+  const inChannel = thought("In-channel work", secondsBeforeNow(10));
+  const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
     now: NOW,
     transcript: [
-      thought("In-channel work", secondsBeforeNow(10)),
+      inChannel,
       thought("Other-channel work", secondsBeforeNow(1), OTHER_CHANNEL),
     ],
   });
-  assert.equal(label, "In-channel work");
+  assert.deepEqual(headline, { id: inChannel.id, label: "In-channel work" });
 });
 
 test("deriveActivityPillLabel lets spine work headline over fresher metadata reads", () => {
-  const label = deriveActivityPillLabel({
+  const realWork = thought("Real work", secondsBeforeNow(10));
+  const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
     now: NOW,
-    transcript: [
-      thought("Real work", secondsBeforeNow(10)),
-      metadata("Prompt context", secondsBeforeNow(1)),
-    ],
+    transcript: [realWork, metadata("Prompt context", secondsBeforeNow(1))],
   });
-  assert.equal(label, "Real work");
+  assert.deepEqual(headline, { id: realWork.id, label: "Real work" });
 });
 
 test("deriveActivityPillLabel falls back to metadata when no spine items exist", () => {
-  const label = deriveActivityPillLabel({
+  const context = metadata("Prompt context", secondsBeforeNow(5));
+  const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
     now: NOW,
-    transcript: [metadata("Prompt context", secondsBeforeNow(5))],
+    transcript: [context],
   });
-  assert.equal(label, "Prompt context");
+  assert.deepEqual(headline, { id: context.id, label: "Prompt context" });
 });
 
 test("deriveActivityPillLabel returns null for an empty transcript", () => {
-  const label = deriveActivityPillLabel({
+  const headline = deriveActivityPillLabel({
     channelId: CHANNEL,
     now: NOW,
     transcript: [],
   });
-  assert.equal(label, null);
+  assert.equal(headline, null);
+});
+
+test("deriveActivityPillLabel never headlines usage/commands meta frames", () => {
+  const realWork = thought("Real work", secondsBeforeNow(10));
+  const headline = deriveActivityPillLabel({
+    channelId: CHANNEL,
+    now: NOW,
+    transcript: [
+      realWork,
+      lifecycleMeta("usage_update", secondsBeforeNow(2)),
+      lifecycleMeta("available_commands_update", secondsBeforeNow(1)),
+    ],
+  });
+  // Meta frames are skipped entirely — the older real action still headlines.
+  assert.deepEqual(headline, { id: realWork.id, label: "Real work" });
+});
+
+test("deriveActivityPillLabel returns null when only meta frames are fresh", () => {
+  const headline = deriveActivityPillLabel({
+    channelId: CHANNEL,
+    now: NOW,
+    transcript: [lifecycleMeta("usage_update", secondsBeforeNow(1))],
+  });
+  assert.equal(headline, null);
+});
+
+test("deriveActivityPillLabel keeps a stable id while a message streams", () => {
+  const first = deriveActivityPillLabel({
+    channelId: CHANNEL,
+    now: NOW,
+    transcript: [assistantMessage("msg-1", "Pass 1: reading", NOW_ISO)],
+  });
+  const extended = deriveActivityPillLabel({
+    channelId: CHANNEL,
+    now: NOW,
+    transcript: [
+      assistantMessage("msg-1", "Pass 1: reading the composer wiring", NOW_ISO),
+    ],
+  });
+  // Same item id: the pill updates text in place instead of re-animating.
+  assert.equal(first.id, "msg-1");
+  assert.equal(extended.id, "msg-1");
+  assert.equal(extended.label, "Pass 1: reading the composer wiring");
+});
+
+test("deriveAgentActivityOrder puts the most recently active agent first", () => {
+  const transcripts = new Map([
+    ["alpha", [thought("Older work", secondsBeforeNow(20))]],
+    ["beta", [thought("Newer work", secondsBeforeNow(2))]],
+  ]);
+  const order = deriveAgentActivityOrder({
+    channelId: CHANNEL,
+    getTranscript: (pubkey) => transcripts.get(pubkey) ?? [],
+    pubkeys: ["alpha", "beta"],
+  });
+  assert.deepEqual(order, ["beta", "alpha"]);
+});
+
+test("deriveAgentActivityOrder keeps roster order for agents with no activity", () => {
+  const transcripts = new Map([
+    ["gamma", [thought("Only worker", secondsBeforeNow(5))]],
+  ]);
+  const order = deriveAgentActivityOrder({
+    channelId: CHANNEL,
+    getTranscript: (pubkey) => transcripts.get(pubkey) ?? [],
+    pubkeys: ["alpha", "beta", "gamma"],
+  });
+  assert.deepEqual(order, ["gamma", "alpha", "beta"]);
+});
+
+test("deriveAgentActivityOrder ignores other-channel activity", () => {
+  const transcripts = new Map([
+    ["alpha", [thought("In-channel", secondsBeforeNow(30))]],
+    ["beta", [thought("Elsewhere", secondsBeforeNow(1), OTHER_CHANNEL)]],
+  ]);
+  const order = deriveAgentActivityOrder({
+    channelId: CHANNEL,
+    getTranscript: (pubkey) => transcripts.get(pubkey) ?? [],
+    pubkeys: ["alpha", "beta"],
+  });
+  assert.deepEqual(order, ["alpha", "beta"]);
+});
+
+test("deriveAgentActivityOrder is stable for identical timestamps", () => {
+  const sameTime = secondsBeforeNow(3);
+  const transcripts = new Map([
+    ["alpha", [thought("Tied A", sameTime)]],
+    ["beta", [thought("Tied B", sameTime)]],
+  ]);
+  const order = deriveAgentActivityOrder({
+    channelId: CHANNEL,
+    getTranscript: (pubkey) => transcripts.get(pubkey) ?? [],
+    pubkeys: ["alpha", "beta"],
+  });
+  assert.deepEqual(order, ["alpha", "beta"]);
 });
 
 test("deriveLastLiveAt prefers the newest channel-scoped transcript item", () => {

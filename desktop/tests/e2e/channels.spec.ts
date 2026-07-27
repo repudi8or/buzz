@@ -2011,19 +2011,15 @@ test("shows and clears activity indicators for active channel agents", async ({
     });
   }, TEST_IDENTITIES.alice.pubkey);
 
-  await expect(page.getByTestId("bot-activity-composer-trigger")).toBeVisible();
-  await expect(
-    page.getByTestId("bot-activity-composer-trigger"),
-  ).not.toContainText("View activity");
-  // Hovering the pill opens the preview popover with the activity item.
-  await page.getByTestId("bot-activity-composer-trigger").hover();
-  const aliceActivityItem = page.getByTestId(
-    `bot-activity-composer-item-${TEST_IDENTITIES.alice.pubkey}`,
-  );
-  await expect(aliceActivityItem).toBeVisible();
-  await expect(aliceActivityItem).toContainText("View activity");
-  // Clicking the pill itself opens the agent's runtime in the aux panel.
-  await page.getByTestId("bot-activity-composer-trigger").click();
+  const activityPill = page.getByTestId("bot-activity-composer-trigger");
+  await expect(activityPill).toBeVisible();
+  await expect(activityPill).not.toContainText("View activity");
+  // E2E seeds every preview feature on, so the composerLiveActivity path is
+  // what renders here: hovering the pill opens the live-activity preview.
+  await activityPill.hover();
+  await expect(page.getByTestId("composer-live-activity-feed")).toBeVisible();
+  // Clicking the pill promotes the agent's runtime into the aux panel.
+  await activityPill.click();
   await expect(page.getByTestId("agent-session-thread-panel")).toBeVisible();
   await expect(page.getByTestId("agent-session-thread-panel")).toContainText(
     "alice",
