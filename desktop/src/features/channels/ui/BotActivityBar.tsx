@@ -335,7 +335,7 @@ function BotActivityAgentPill({
       <PopoverTrigger asChild>
         <button
           aria-label={`${agent.name} is working. View activity.`}
-          className="inline-flex h-7 min-w-0 max-w-50 items-center gap-2 rounded-full text-xs font-medium leading-none text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:text-primary"
+          className="inline-flex h-7 min-w-0 max-w-50 items-center gap-1.5 rounded-full text-xs font-medium leading-none text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:text-primary"
           data-testid="bot-activity-composer-trigger"
           onBlur={hover.scheduleClose}
           onClick={(event) => {
@@ -615,7 +615,7 @@ export function BotActivityComposerAction({
           // instead gets min-w-0 so it can shrink with the container
           // (shrinkToFit) rather than overflow into scroll.
           className={cn(
-            "flex items-center gap-1.5",
+            "flex items-center gap-3",
             itemCount === 1 ? "min-w-0" : "min-w-max",
           )}
         >
