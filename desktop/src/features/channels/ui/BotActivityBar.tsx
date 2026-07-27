@@ -226,7 +226,11 @@ function BotActivityAgentPill({
   /** Strip-level hover popover state shared by every pill. */
   hover: StripHoverPopover;
   onOpenAgentSession: (pubkey: string, channelId?: string | null) => void;
-  /** Freeze the pill's rendered width (a hover card is showing). */
+  /**
+   * Freeze the pill's rendered width — set only while a hover card is open
+   * AND this pill's resize would move it (the pill anchors the card or sits
+   * left of the anchor).
+   */
   pinWidth: boolean;
   profiles?: UserProfileLookup;
 }) {
@@ -261,10 +265,12 @@ function BotActivityAgentPill({
     );
   }, [holdLabelSwap, activeId, activeLabel]);
 
-  // While a hover card is showing, the pill must not resize: label swaps
+  // While this pill's resize could move the open hover card (it is the
+  // card's anchor, or sits left of it), it must not resize: label swaps
   // keep animating, but a longer/shorter label truncating inside a FROZEN
-  // width can no longer shift the neighboring pills under the cursor. The
-  // width is measured once when the hold starts and dropped on release.
+  // width can no longer shift the card's anchor edge or slide the trigger
+  // out from under the cursor. The width is measured once when the pin
+  // starts and dropped on release.
   const triggerRef = React.useRef<HTMLButtonElement | null>(null);
   const [pinnedWidth, setPinnedWidth] = React.useState<number | null>(null);
   React.useLayoutEffect(() => {
@@ -394,8 +400,9 @@ function BotActivityAgentPill({
  * that run for the same duration as the slot spring, so the fade and the
  * move finish together and reorders read as a shuffle instead of a hard
  * swap. Enter/exit use the same scale+fade treatment. While a hover card is
- * showing (`freezeLayout`), layout animation is disabled entirely so nothing
- * can slide under the cursor.
+ * showing and this slot's movement would displace it (`freezeLayout` — the
+ * slot holds the card's anchor pill or one left of it), layout animation is
+ * disabled so nothing can shift the card or slide under the cursor.
  */
 function AnimatedPillSlot({
   children,
@@ -405,7 +412,10 @@ function AnimatedPillSlot({
 }: {
   /** Render prop so the pill can defer label swaps while its slot moves. */
   children: (isMoving: boolean) => React.ReactNode;
-  /** Disable slot layout animation while a hover card is showing. */
+  /**
+   * Disable slot layout animation while a hover card is open and this
+   * slot's movement would displace it (anchor pill or left of the anchor).
+   */
   freezeLayout: boolean;
   shouldReduceMotion: boolean;
   /**
@@ -470,10 +480,15 @@ function AnimatedPillSlot({
  * whole turn, so liveness is carried by each pill's label ticker while
  * positional motion is reserved for membership changes: a newly working
  * agent's pill enters on the right, a finished agent's pill exits and its
- * neighbors animate into the gap. No movement happens while the cursor is
- * over the bar or a hover card is showing, when order, membership, layout
- * animation, and pill widths are all frozen so nothing can move out from
- * under (or slide under) the cursor. Each pill truncates its label at its own max width. A lone
+ * neighbors animate into the gap. While the cursor is over the bar or a
+ * hover card is showing, order and membership are frozen so a pill can't
+ * exit (or enter) and slide the strip under the cursor. Width pinning and
+ * layout freezing are narrower — placement-aware: only while a card is OPEN,
+ * and only for the pills whose resize would actually move it (the card is
+ * side="top" align="start", anchored to its pill's left edge, so just the
+ * anchor pill and the pills left of it qualify). Pills right of the anchor —
+ * and every pill when no card is open — stay free to resize with their
+ * label swaps. Each pill truncates its label at its own max width. A lone
  * pill shrinks with a narrow container (its label ellipsizes) so it always
  * fits; when SEVERAL pills outgrow a narrow container (thread panel
  * toolbars especially) the strip scrolls horizontally — scrollbar hidden,
@@ -493,11 +508,13 @@ export function BotActivityComposerAction({
 }: BotActivityBarProps) {
   const shouldReduceMotion = useReducedMotion();
   const hover = useStripHoverPopover();
-  // The freeze engages as soon as the cursor is anywhere over the bar — not
-  // only once a card opens — so pills can't move (or resize) under a cursor
-  // that is still traveling toward one. It also holds while a card is open
-  // with the cursor off the bar (over the card itself, or during the close
-  // grace period).
+  // The MEMBERSHIP freeze engages as soon as the cursor is anywhere over the
+  // bar — not only once a card opens — so pills can't enter/exit and slide
+  // the strip under a cursor that is still traveling toward one. It also
+  // holds while a card is open with the cursor off the bar (over the card
+  // itself, or during the close grace period). Width pinning is NOT tied to
+  // this hold — it is placement-aware and applies per pill only while a
+  // card is open (see activeCardIndex below).
   const [barHovered, setBarHovered] = React.useState(false);
   const holdActive = barHovered || hover.activePubkey !== null;
 
@@ -568,6 +585,20 @@ export function BotActivityComposerAction({
     );
   }, [holdActive, liveOrderedAgents]);
 
+  // Placement-aware resize guard: index of the pill anchoring the open hover
+  // card, or -1 with no card up. The card is side="top" align="start" —
+  // anchored to its pill's LEFT edge — so only a resize of the anchor pill
+  // itself (which could also slide the trigger out from under the cursor)
+  // or of a pill left of it can move the card. Those pills pin their width
+  // and freeze their slot's layout animation; pills right of the anchor —
+  // and every pill when no card is open — resize freely with label swaps.
+  const activeCardIndex =
+    hover.activePubkey === null
+      ? -1
+      : orderedAgents.findIndex(
+          (agent) => agent.pubkey.toLowerCase() === hover.activePubkey,
+        );
+
   if (orderedAgents.length === 0 && typingIndicator == null) {
     return null;
   }
@@ -589,6 +620,10 @@ export function BotActivityComposerAction({
       // a dead gutter after the fade. At rest nothing changes: the padding
       // keeps the first pill aligned to the gutter.
       className="relative -mx-5 min-w-0 flex-1"
+      // Exposes the membership hold to the e2e suite: width pins no longer
+      // engage on bar hover alone, so tests need this to know the hold is
+      // armed before mutating membership.
+      data-hold={holdActive ? "true" : undefined}
       data-testid="bot-activity-strip"
       onMouseEnter={() => setBarHovered(true)}
       onMouseLeave={() => setBarHovered(false)}
@@ -620,32 +655,39 @@ export function BotActivityComposerAction({
           )}
         >
           <AnimatePresence initial={false}>
-            {orderedAgents.map((agent) => (
-              <AnimatedPillSlot
-                freezeLayout={holdActive}
-                key={agent.pubkey}
-                shouldReduceMotion={Boolean(shouldReduceMotion)}
-                shrinkToFit={itemCount === 1}
-              >
-                {(isMoving) => (
-                  <BotActivityAgentPill
-                    agent={agent}
-                    avatarUrl={
-                      profiles?.[agent.pubkey.toLowerCase()]?.avatarUrl ?? null
-                    }
-                    channelId={channelId}
-                    holdLabelSwap={isMoving}
-                    hover={hover}
-                    onOpenAgentSession={onOpenAgentSession}
-                    pinWidth={holdActive}
-                    profiles={profiles}
-                  />
-                )}
-              </AnimatedPillSlot>
-            ))}
+            {orderedAgents.map((agent, index) => {
+              const guardsOpenCard =
+                activeCardIndex !== -1 && index <= activeCardIndex;
+              return (
+                <AnimatedPillSlot
+                  freezeLayout={guardsOpenCard}
+                  key={agent.pubkey}
+                  shouldReduceMotion={Boolean(shouldReduceMotion)}
+                  shrinkToFit={itemCount === 1}
+                >
+                  {(isMoving) => (
+                    <BotActivityAgentPill
+                      agent={agent}
+                      avatarUrl={
+                        profiles?.[agent.pubkey.toLowerCase()]?.avatarUrl ??
+                        null
+                      }
+                      channelId={channelId}
+                      holdLabelSwap={isMoving}
+                      hover={hover}
+                      onOpenAgentSession={onOpenAgentSession}
+                      pinWidth={guardsOpenCard}
+                      profiles={profiles}
+                    />
+                  )}
+                </AnimatedPillSlot>
+              );
+            })}
             {typingIndicator == null ? null : (
               <AnimatedPillSlot
-                freezeLayout={holdActive}
+                // The typing group trails every pill, so its movement can
+                // never displace an open card (anchored at or left of it).
+                freezeLayout={false}
                 key="typing"
                 shouldReduceMotion={Boolean(shouldReduceMotion)}
                 shrinkToFit={itemCount === 1}

@@ -2184,11 +2184,15 @@ test("composer does not shift when the activity row mounts and clears", async ({
 // Working pills hold a stable turn-start order (earliest worker left-most);
 // slots only change when MEMBERSHIP does — an agent starting work appends a
 // pill on the right, a finishing agent's pill exits. While the cursor is
-// anywhere over the activity bar OR a hover card is showing, even those
-// changes must not move the strip under the cursor: pill order, membership,
-// and widths are frozen, and the queued membership change applies (animated)
-// only after the hold releases (BotActivityBar strip-level hover popover +
-// bar-hover freeze).
+// anywhere over the activity bar OR a hover card is showing, membership is
+// frozen so an exit/enter can't slide the strip under the cursor; the queued
+// membership change applies (animated) only after the hold releases. Width
+// pinning is narrower — placement-aware: the hover card is anchored to its
+// pill's LEFT edge (side="top" align="start"), so only the anchor pill and
+// the pills left of it pin their widths, and only while a card is open.
+// Pills right of the anchor — and every pill when no card is open — resize
+// freely with their label swaps (BotActivityBar strip-level hover popover +
+// bar-hover membership hold).
 
 const PILL_AGENT_NOVA = "cc".repeat(32);
 const PILL_AGENT_ASTRA = "dd".repeat(32);
@@ -2269,6 +2273,30 @@ async function seedPillActivityMessage(
 }
 
 /**
+ * Wait until every pill trigger's box holds still across a 150ms window.
+ * Label swaps resize the pills (widths are no longer pinned on bar hover)
+ * and the growth animates via the slot layout spring, so tests must not
+ * measure geometry — or park the cursor relative to it — mid-animation.
+ */
+async function waitForSettledPillBoxes(
+  page: import("@playwright/test").Page,
+  triggers: import("@playwright/test").Locator,
+) {
+  await expect(async () => {
+    const count = await triggers.count();
+    const measure = () =>
+      Promise.all(
+        Array.from({ length: count }, (_, index) =>
+          triggers.nth(index).boundingBox(),
+        ),
+      );
+    const before = await measure();
+    await page.waitForTimeout(150);
+    expect(await measure()).toEqual(before);
+  }).toPass();
+}
+
+/**
  * Open #agents with two seeded working agents. Pill order follows turn
  * START anchors (earliest worker left-most): nova's turn starts 60s before
  * base and astra's 30s before, so the strip renders [nova, astra] — well
@@ -2335,6 +2363,17 @@ async function openAgentsChannelWithTwoWorkingPills(
     "aria-label",
     "nova is working. View activity.",
   );
+  // The pills mount with the generic "<name> is working…" label and GROW
+  // when the seeded headlines tick in. Wait for the swap and for the boxes
+  // to settle so callers measure — and park the cursor against — final
+  // geometry, not a strip that is still expanding rightward.
+  await expect(triggers.first()).toContainText(
+    "Nova: tracing the observer store",
+  );
+  await expect(triggers.nth(1)).toContainText(
+    "Astra: reviewing the composer wiring",
+  );
+  await waitForSettledPillBoxes(page, triggers);
   return { baseMs, triggers };
 }
 
@@ -2427,22 +2466,32 @@ test("hovering the bar itself freezes pill membership without opening a card", a
   await installMockBridge(page, { managedAgents: PILL_AGENT_SEEDS });
   const { baseMs, triggers } = await openAgentsChannelWithTwoWorkingPills(page);
 
-  // Park the cursor in the gap between the two pills — over the strip, not a
-  // pill trigger. The strip sizes to its content, so there is no reliable
-  // "empty right side"; the inter-pill gap is the one spot guaranteed to be
-  // strip-not-pill. This alone must engage the freeze; no card opens.
+  // Park the cursor on the strip past the last pill — over the bar, not a
+  // pill trigger. The strip root is a flex-1 row item, so the space right of
+  // the pills is strip-not-pill. Widths are no longer pinned on bar hover,
+  // so the inter-pill gap is unsafe: a label swap growing the left pill
+  // would push the trigger under a cursor parked there and open a card.
+  // This alone must engage the membership freeze; no card opens.
   const novaBox = await triggers.first().boundingBox();
   const astraBox = await triggers.nth(1).boundingBox();
   if (!novaBox || !astraBox) {
     throw new Error("Both pills must be visible.");
   }
   await page.mouse.move(
-    (novaBox.x + novaBox.width + astraBox.x) / 2,
+    astraBox.x + astraBox.width + 60,
     novaBox.y + novaBox.height / 2,
   );
-  // The bar hold pins every pill's width via an inline style — waiting for
-  // it proves the freeze is engaged before the membership change below.
-  await expect(triggers.first()).toHaveAttribute("style", /width/);
+  // Bar hover alone no longer pins pill widths (the pin is placement-aware
+  // and engages only for pills at/left of an OPEN card's anchor) — the strip
+  // exposes the membership hold via data-hold; waiting for it proves the
+  // freeze is engaged before the membership change below.
+  await expect(page.getByTestId("bot-activity-strip")).toHaveAttribute(
+    "data-hold",
+    "true",
+  );
+  // No card is open, so no pill is width-pinned.
+  await expect(triggers.first()).not.toHaveAttribute("style", /width/);
+  await expect(triggers.nth(1)).not.toHaveAttribute("style", /width/);
   await expect(page.getByTestId("composer-live-activity-feed")).toHaveCount(0);
 
   // Astra's turn completes — her pill would exit, sliding the strip under
@@ -2490,6 +2539,99 @@ test("hovering the bar itself freezes pill membership without opening a card", a
     "aria-label",
     "nova is working. View activity.",
   );
+});
+
+test("open card pins only its anchor pill and the pills left of it", async ({
+  page,
+}) => {
+  await installMockBridge(page, { managedAgents: PILL_AGENT_SEEDS });
+  const { baseMs, triggers } = await openAgentsChannelWithTwoWorkingPills(page);
+
+  const novaPill = page.getByRole("button", {
+    name: "nova is working. View activity.",
+  });
+  const astraPill = page.getByRole("button", {
+    name: "astra is working. View activity.",
+  });
+  const feed = page.getByTestId("composer-live-activity-feed");
+
+  // Give astra a SHORT label first so the long label seeded mid-hover below
+  // grows her pill by a measurable amount (the helper's default label may
+  // already sit near the pill's max-width cap).
+  await seedPillActivityMessage(page, {
+    agentPubkey: PILL_AGENT_ASTRA,
+    atMs: baseMs + 3_000,
+    seq: baseMs + 10_003,
+    text: "Astra: ok",
+    turnId: "pill-turn-astra",
+  });
+  await expect(astraPill).toContainText("Astra: ok");
+  // The shrink animates via the slot layout spring — settle before
+  // measuring baseline geometry.
+  await waitForSettledPillBoxes(page, triggers);
+
+  // Card on the FIRST pill: the card anchors to nova's left edge, so astra
+  // (right of the anchor) stays free to resize — her growth cannot move it.
+  await novaPill.hover();
+  await expect(feed).toBeVisible();
+  // Only the anchor pill carries the inline width pin.
+  await expect(novaPill).toHaveAttribute("style", /width/);
+  await expect(astraPill).not.toHaveAttribute("style", /width/);
+  const novaBox = await novaPill.boundingBox();
+  const astraBox = await astraPill.boundingBox();
+  const feedBox = await feed.boundingBox();
+  if (!novaBox || !astraBox || !feedBox) {
+    throw new Error("Both pills and the card must be visible.");
+  }
+
+  await seedPillActivityMessage(page, {
+    agentPubkey: PILL_AGENT_ASTRA,
+    atMs: baseMs + 4_000,
+    seq: baseMs + 10_004,
+    text: "Astra: expanding into a much longer running action label",
+    turnId: "pill-turn-astra",
+  });
+  await expect(astraPill).toContainText("much longer running action");
+  // Astra's pill grew with the label swap (no pin right of the anchor)...
+  await expect
+    .poll(async () => (await astraPill.boundingBox())?.width ?? 0)
+    .toBeGreaterThan(astraBox.width + 4);
+  // ...while the anchor pill and its open card never moved. The card gets a
+  // 2px tolerance: Radix's popper re-measures on content changes and lands
+  // with sub-pixel rounding jitter that toBeCloseTo(…, 0) would flag.
+  const novaAfter = await novaPill.boundingBox();
+  const feedAfter = await feed.boundingBox();
+  expect(novaAfter?.x).toBeCloseTo(novaBox.x, 0);
+  expect(novaAfter?.width).toBeCloseTo(novaBox.width, 0);
+  expect(Math.abs((feedAfter?.x ?? Number.NaN) - feedBox.x)).toBeLessThan(2);
+  expect(Math.abs((feedAfter?.y ?? Number.NaN) - feedBox.y)).toBeLessThan(2);
+
+  // Inverse: a card on the SECOND pill pins the pill left of the anchor —
+  // nova resizing would shift astra's left edge and drag the card with it.
+  await page.getByTestId("chat-title").hover();
+  await expect(feed).toBeHidden();
+  await astraPill.hover();
+  await expect(feed).toBeVisible();
+  await expect(novaPill).toHaveAttribute("style", /width/);
+  await expect(astraPill).toHaveAttribute("style", /width/);
+  const novaPinned = await novaPill.boundingBox();
+  if (!novaPinned) {
+    throw new Error("Nova's pill must be visible.");
+  }
+  await seedPillActivityMessage(page, {
+    agentPubkey: PILL_AGENT_NOVA,
+    atMs: baseMs + 5_000,
+    seq: baseMs + 10_005,
+    text: "Nova: ok",
+    turnId: "pill-turn-nova",
+  });
+  await expect(novaPill).toContainText("Nova: ok");
+  // The shorter label swapped in but truncates inside the FROZEN width —
+  // the pill can't shrink and shift the card's anchor.
+  const novaHeld = await novaPill.boundingBox();
+  expect(novaHeld?.x).toBeCloseTo(novaPinned.x, 0);
+  expect(novaHeld?.width).toBeCloseTo(novaPinned.width, 0);
+  await expect(feed).toBeVisible();
 });
 
 test("hovering across pills switches a single live-activity card", async ({
