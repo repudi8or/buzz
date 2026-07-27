@@ -209,8 +209,11 @@ function BotActivityAgentPill({
   );
   const activeId = headline?.id ?? GENERIC_LABEL_ID;
   // No fresh action headline (see deriveActivityPillLabel) — decay to the
-  // agent-named generic working label.
-  const activeLabel = headline?.label ?? `${agent.name} is working…`;
+  // agent-named generic label. Typing-fallback-only agents read
+  // "is typing…" (matching the human indicator's vocabulary); observer-backed
+  // agents read "is working…".
+  const activeLabel =
+    headline?.label ?? `${agent.name} is ${typingOnly ? "typing" : "working"}…`;
   // The rendered label lags the derived one while the pill is moving: the
   // push-up ticker plays after the slot settles (or immediately when idle).
   // Keyed by transcript item id, not label text — a NEW action swaps, while
@@ -313,7 +316,7 @@ function BotActivityAgentPill({
       <PopoverTrigger asChild>
         <button
           aria-label={`${agent.name} is working. View activity.`}
-          className="inline-flex h-7 min-w-0 max-w-49 items-center gap-1.5 rounded-full border border-border/60 bg-background px-2 text-xs font-semibold leading-none text-muted-foreground shadow-xs transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:border-primary/40 data-[state=open]:bg-primary/10 data-[state=open]:text-primary"
+          className="inline-flex h-7 min-w-0 max-w-50 items-center gap-1.5 rounded-full border border-border/60 bg-background px-2 text-xs font-semibold leading-none text-muted-foreground shadow-xs transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:border-primary/40 data-[state=open]:bg-primary/10 data-[state=open]:text-primary"
           data-testid="bot-activity-composer-trigger"
           onBlur={hover.scheduleClose}
           onClick={(event) => {
