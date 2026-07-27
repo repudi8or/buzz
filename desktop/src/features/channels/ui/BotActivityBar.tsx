@@ -105,7 +105,11 @@ function useStripOverflowFades(
     const observer = new ResizeObserver(updateFades);
     observer.observe(node);
     // The content wrapper is the scroller's only child; observing it catches
-    // overflow changes that don't touch the scroller's own box.
+    // overflow changes that don't touch the scroller's own box. This relies
+    // on the wrapper being min-w-max (multi-item strip): if it could
+    // collapse to the scroller's width, content growing INSIDE it (label
+    // tickers swap after a resize settles) would change scrollWidth without
+    // resizing any observed element, leaving the fades stale.
     const content = node.firstElementChild;
     if (content !== null) {
       observer.observe(content);
@@ -602,7 +606,19 @@ export function BotActivityComposerAction({
         onScroll={updateFades}
         ref={scrollerRef}
       >
-        <div className="flex min-w-0 items-center gap-1.5">
+        <div
+          // The overflow-fade hook resize-observes this wrapper as its proxy
+          // for content size. min-w-max keeps it from collapsing to the
+          // scroller's width (it is a shrinkable flex item), so late content
+          // growth — label tickers swap AFTER a resize settles — still
+          // changes an observed box and refreshes the fades. A lone item
+          // instead gets min-w-0 so it can shrink with the container
+          // (shrinkToFit) rather than overflow into scroll.
+          className={cn(
+            "flex items-center gap-1.5",
+            itemCount === 1 ? "min-w-0" : "min-w-max",
+          )}
+        >
           <AnimatePresence initial={false}>
             {orderedAgents.map((agent) => (
               <AnimatedPillSlot
