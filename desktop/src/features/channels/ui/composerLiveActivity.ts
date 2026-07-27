@@ -28,6 +28,10 @@ export type ActivityPillHeadline = {
 /**
  * Latest action headline for a working agent's composer pill.
  *
+ * Tool items headline in the terse action format from getActivityHeadline —
+ * verb + compact object ("Read foo.ts"), not "label · full preview" — so the
+ * pill's narrow cap shows the informative part of the action.
+ *
  * Channel-scoped, two-tier scan (spine items headline over metadata reads,
  * mirroring the session transcript's noise gate), newest wins. The headline
  * PERSISTS regardless of age — while a turn is in progress, the last real

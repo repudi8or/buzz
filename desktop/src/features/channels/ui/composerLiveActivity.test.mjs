@@ -48,6 +48,32 @@ const lifecycleMeta = (acpSource, timestamp, channelId = CHANNEL) => ({
   channelId,
 });
 
+/** Tool item with a classifier descriptor: headlines tersely (verb + object). */
+const fileReadTool = (path, timestamp, channelId = CHANNEL) => ({
+  id: `tool-${path}-${timestamp}`,
+  type: "tool",
+  renderClass: "file-read",
+  title: "Read file",
+  toolName: "dev__read_file",
+  buzzToolName: null,
+  status: "completed",
+  args: { path },
+  result: "",
+  isError: false,
+  timestamp,
+  startedAt: timestamp,
+  completedAt: timestamp,
+  descriptor: {
+    renderClass: "file-read",
+    label: "Read file",
+    preview: path,
+    action: { verb: "Read", object: path },
+    source: "harness",
+    groupKey: "read_file",
+  },
+  channelId,
+});
+
 /** Streaming assistant message: headline is the (growing) first line. */
 const assistantMessage = (id, text, timestamp, channelId = CHANNEL) => ({
   id,
@@ -69,6 +95,17 @@ test("deriveActivityPillLabel returns the newest headline, no rotation", () => {
     transcript: [thought("Reading files", secondsBeforeNow(4)), editing],
   });
   assert.deepEqual(headline, { id: editing.id, label: "Editing ChannelPane" });
+});
+
+test("deriveActivityPillLabel headlines tool items tersely (verb + basename)", () => {
+  const read = fileReadTool("src/agents/ui/foo.ts", secondsBeforeNow(2));
+  const headline = deriveActivityPillLabel({
+    channelId: CHANNEL,
+    transcript: [read],
+  });
+  // Terse action tier, not "Read file · src/agents/ui/foo.ts" — the pill's
+  // narrow cap must show the informative part of the action.
+  assert.deepEqual(headline, { id: read.id, label: "Read foo.ts" });
 });
 
 test("deriveActivityPillLabel keeps the last action headline regardless of age", () => {
