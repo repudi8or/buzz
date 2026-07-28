@@ -3109,6 +3109,52 @@ test("typing indicator shows avatars and maintains stable name order", async ({
   ).toContainText("alice and bob are typing");
 });
 
+test("lone typing group uses the full row width instead of truncating at the strip cap", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  await page.getByTestId("channel-random").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("random");
+  await waitForMockLiveSubscription(page, "random", KIND_TYPING_INDICATOR);
+
+  // Three typers push the label past the strip's shared-slot cap (max-w-64,
+  // 256px): with no pills the typing group is the strip's LONE item and must
+  // consume the row's free width instead of cutting the label off mid-name.
+  for (const identity of [
+    TEST_IDENTITIES.alice,
+    TEST_IDENTITIES.bob,
+    TEST_IDENTITIES.charlie,
+  ]) {
+    await page.evaluate((pubkey) => {
+      window.__BUZZ_E2E_EMIT_MOCK_TYPING__?.({
+        channelName: "random",
+        pubkey,
+      });
+    }, identity.pubkey);
+  }
+
+  const label = page.getByTestId("message-typing-indicator-label");
+  await expect(label).toContainText("alice, bob, and charlie are typing");
+
+  // No truncation with room to spare: the label's content fits its box.
+  await expect
+    .poll(() => label.evaluate((el) => el.scrollWidth - el.clientWidth))
+    .toBeLessThanOrEqual(0);
+
+  // Genuinely narrow, the lone group still shrinks with the container and
+  // ellipsizes (rather than overflowing into scroll under an edge fade).
+  await page
+    .getByTestId("channel-composer-activity-row")
+    .evaluate((element) => {
+      element.style.width = "200px";
+    });
+  await expect
+    .poll(() => label.evaluate((el) => el.scrollWidth - el.clientWidth))
+    .toBeGreaterThan(0);
+  await expect(page.getByTestId("bot-activity-strip-fade-end")).toHaveCount(0);
+});
+
 test("sidebar shows unread indicator for newly active channels", async ({
   page,
 }) => {

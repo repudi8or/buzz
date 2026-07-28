@@ -775,10 +775,16 @@ export function BotActivityComposerAction({
                   {() => (
                     <div
                       className={cn(
-                        // Cap like the pills (which use max-w-50 each) so a
-                        // long "X, Y, and N more are typing" label truncates
-                        // instead of inflating the scroll extent.
-                        "flex h-7 min-w-0 max-w-64 items-center",
+                        "flex h-7 min-w-0 items-center",
+                        // Only when sharing the strip with pills does the
+                        // group need a width cap (like the pills' max-w-50
+                        // each) so a long "X, Y, and N more are typing" label
+                        // truncates instead of inflating the scroll extent.
+                        // As the strip's lone item it shrinks with the
+                        // container instead (min-w-0 through the slot chain),
+                        // so a cap would only cut the label off in a row that
+                        // has room to spare.
+                        orderedAgents.length > 0 && "max-w-64",
                         // Composer-edge alignment when the typing group leads
                         // the strip (no pills): 0.75rem/1rem composer padding
                         // + 1px border. Mirrors the standalone row's old
