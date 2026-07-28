@@ -64,6 +64,11 @@ function terseActionObject(summary: CompactToolSummary): string | null {
  * reduced to their basename), e.g. "Read foo.ts" rather than
  * "Read file · src/agents/ui/foo.ts" — so the composer pill's 200px cap
  * shows the informative part instead of ellipsizing a long preview.
+ *
+ * Action headlines are past-tense verb phrases throughout ("Read foo.ts",
+ * "Thought", "Updated plan") — plan and thought items are normalized here
+ * so no bare noun ("Plan") or present participle ("Thinking") leaks into
+ * the pill next to the past-tense tool verbs.
  */
 export function getActivityHeadline(item: TranscriptItem): string | null {
   if (item.type === "tool") {
@@ -93,7 +98,14 @@ export function getActivityHeadline(item: TranscriptItem): string | null {
   }
 
   if (item.type === "thought") {
-    return item.title === "Plan" ? "Planning" : item.title;
+    if (item.title === "Plan") {
+      return "Planned";
+    }
+    return item.title === "Thinking" ? "Thought" : item.title;
+  }
+
+  if (item.type === "plan") {
+    return item.isUpdate ? "Updated plan" : "Created plan";
   }
 
   if (item.type === "metadata") {

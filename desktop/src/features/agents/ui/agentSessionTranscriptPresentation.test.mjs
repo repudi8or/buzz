@@ -94,6 +94,57 @@ test("getActivityHeadline basenames path-like tool objects", () => {
   );
 });
 
+test("getActivityHeadline renders plan and thought items in past tense", () => {
+  // Bare "Plan" / "Thinking" titles must not headline next to the past-tense
+  // tool verbs ("Read foo.ts", "Ran …").
+  assert.equal(
+    getActivityHeadline({
+      id: "plan:1",
+      type: "plan",
+      renderClass: "plan",
+      title: "Plan",
+      text: "1. Do the thing",
+      timestamp: baseTimestamp,
+    }),
+    "Created plan",
+  );
+  assert.equal(
+    getActivityHeadline({
+      id: "plan:1:update:x",
+      type: "plan",
+      renderClass: "plan",
+      title: "Plan updated",
+      text: "Now doing step 2",
+      timestamp: baseTimestamp,
+      isUpdate: true,
+      targetId: "plan:1",
+    }),
+    "Updated plan",
+  );
+  assert.equal(
+    getActivityHeadline({
+      id: "thought:1",
+      type: "thought",
+      renderClass: "thought",
+      title: "Thinking",
+      text: "hmm",
+      timestamp: baseTimestamp,
+    }),
+    "Thought",
+  );
+  assert.equal(
+    getActivityHeadline({
+      id: "thought:2",
+      type: "thought",
+      renderClass: "thought",
+      title: "Plan",
+      text: "plan-shaped thought",
+      timestamp: baseTimestamp,
+    }),
+    "Planned",
+  );
+});
+
 test("getActivityHeadline keeps shell commands whole (no basenaming)", () => {
   assert.equal(
     getActivityHeadline(
