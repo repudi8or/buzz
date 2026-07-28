@@ -1,5 +1,10 @@
 import * as React from "react";
+import { motion, useReducedMotion } from "motion/react";
 
+import {
+  COMPOSER_STRIP_AVATAR_MORPH_TRANSITION,
+  useComposerStripAvatarLayoutId,
+} from "@/features/channels/ui/composerStripAvatarLayout";
 import {
   resolveUserLabel,
   type UserProfileLookup,
@@ -52,6 +57,47 @@ function formatTypingLabel(names: string[]) {
   return `${names[0]}, ${names[1]}, and ${names.length - 2} more are typing...`;
 }
 
+/**
+ * One typer's avatar in the overlapping set. Inside a composer activity
+ * strip, the avatar carries that strip's shared-element layout id (see
+ * composerStripAvatarLayout) so an agent's avatar MORPHS between the merged
+ * typing group and its status pill on partition flips instead of exiting
+ * one and entering the other. Outside a strip (context null) or under
+ * reduced motion the id is dropped and the avatar mounts in place.
+ */
+function TypingAvatar({
+  avatarUrl,
+  label,
+  overlap,
+  pubkey,
+}: {
+  avatarUrl: string | null;
+  label: string;
+  overlap: boolean;
+  pubkey: string;
+}) {
+  const shouldReduceMotion = useReducedMotion();
+  const morphLayoutId = useComposerStripAvatarLayoutId(pubkey);
+  return (
+    <motion.div
+      className={cn(
+        "relative h-5 w-5 shrink-0 rounded-lg ring-1 ring-background",
+        overlap && "-ml-1.5",
+      )}
+      data-testid="message-typing-avatar"
+      layoutId={shouldReduceMotion ? undefined : morphLayoutId}
+      transition={COMPOSER_STRIP_AVATAR_MORPH_TRANSITION}
+    >
+      <ProfileAvatar
+        avatarUrl={avatarUrl}
+        label={label}
+        className="h-5 w-5 text-3xs"
+        iconClassName="h-4 w-4"
+      />
+    </motion.div>
+  );
+}
+
 export function TypingIndicatorRow({
   channel,
   className,
@@ -85,27 +131,15 @@ export function TypingIndicatorRow({
       {labels.length > 0 && (
         <div className="flex min-w-0 w-full items-center gap-2">
           <div className="flex shrink-0 items-center">
-            {typingPubkeys.map((pubkey, index) => {
-              const profile = profiles?.[pubkey.toLowerCase()];
-              const label = labels[index] ?? truncatePubkey(pubkey);
-              return (
-                <div
-                  key={pubkey}
-                  className={cn(
-                    "relative h-5 w-5 shrink-0 rounded-lg ring-1 ring-background",
-                    index > 0 && "-ml-1.5",
-                  )}
-                  data-testid="message-typing-avatar"
-                >
-                  <ProfileAvatar
-                    avatarUrl={profile?.avatarUrl ?? null}
-                    label={label}
-                    className="h-5 w-5 text-3xs"
-                    iconClassName="h-4 w-4"
-                  />
-                </div>
-              );
-            })}
+            {typingPubkeys.map((pubkey, index) => (
+              <TypingAvatar
+                key={pubkey}
+                avatarUrl={profiles?.[pubkey.toLowerCase()]?.avatarUrl ?? null}
+                label={labels[index] ?? truncatePubkey(pubkey)}
+                overlap={index > 0}
+                pubkey={pubkey}
+              />
+            ))}
           </div>
           <p
             className={cn(

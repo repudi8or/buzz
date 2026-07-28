@@ -15,6 +15,11 @@ import { Shimmer } from "@/shared/ui/Shimmer";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { ComposerLiveActivityFeed } from "./ComposerLiveActivityFeed";
 import {
+  COMPOSER_STRIP_AVATAR_MORPH_TRANSITION,
+  ComposerStripAvatarScopeContext,
+  useComposerStripAvatarLayoutId,
+} from "./composerStripAvatarLayout";
+import {
   deriveActivityPillLabel,
   deriveAgentWorkingOrder,
 } from "./composerLiveActivity";
@@ -251,6 +256,7 @@ function BotActivityAgentPill({
   const pillKey = agent.pubkey.toLowerCase();
   const open = hover.activePubkey === pillKey;
   const shouldReduceMotion = useReducedMotion();
+  const avatarMorphLayoutId = useComposerStripAvatarLayoutId(agent.pubkey);
   const transcript = useAgentTranscript(true, agent.pubkey);
   const headline = React.useMemo(
     () => deriveActivityPillLabel({ channelId, transcript }),
@@ -321,12 +327,22 @@ function BotActivityAgentPill({
 
   const pillContent = (
     <>
-      <UserAvatar
-        avatarUrl={avatarUrl}
-        className="!h-5 !w-5 shrink-0 text-3xs"
-        displayName={agent.name}
-        size="xs"
-      />
+      {/* Shared-element home: matches the typing group's avatar layoutId so
+          a group→pill promotion morphs the avatar across (see
+          composerStripAvatarLayout). Under reduced motion the id is dropped
+          and the avatar mounts in place. */}
+      <motion.div
+        className="shrink-0"
+        layoutId={shouldReduceMotion ? undefined : avatarMorphLayoutId}
+        transition={COMPOSER_STRIP_AVATAR_MORPH_TRANSITION}
+      >
+        <UserAvatar
+          avatarUrl={avatarUrl}
+          className="!h-5 !w-5 text-3xs"
+          displayName={agent.name}
+          size="xs"
+        />
+      </motion.div>
       {/* Ticker viewport: 16px tall with a matching 16px line box (leading-4
           overrides the button's leading-none). Inter's ascent+descent ink is
           ~1.21em (~14.5px at text-xs) — taller than a leading-none line box —
@@ -553,7 +569,9 @@ function AnimatedPillSlot({
  * compressing every pill into an unreadable sliver or wrapping the
  * fixed-height row. The scroll viewport bleeds across the mounting row's
  * gutter so the clip line and its fades sit at the container's visual
- * edges, never mid-row on a pill.
+ * edges, never mid-row on a pill. The strip provides a per-instance avatar
+ * shared-element scope (composerStripAvatarLayout) so an agent's avatar
+ * morphs between the typing group and a pill on partition flips.
  */
 export function BotActivityComposerAction({
   agents,
@@ -565,6 +583,10 @@ export function BotActivityComposerAction({
 }: BotActivityBarProps) {
   const shouldReduceMotion = useReducedMotion();
   const hover = useStripHoverPopover();
+  // Namespaces the avatar shared-element ids to THIS strip: the channel
+  // composer strip and the thread panel strip can be mounted at once, and a
+  // morph must never travel between them (see composerStripAvatarLayout).
+  const avatarScopeId = React.useId();
   // The MEMBERSHIP freeze engages as soon as the cursor is anywhere over the
   // bar — not only once a card opens — so pills can't enter/exit and slide
   // the strip under a cursor that is still traveling toward one. It also
@@ -666,132 +688,134 @@ export function BotActivityComposerAction({
   const itemCount = orderedAgents.length + (typingIndicator == null ? 0 : 1);
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: hover-only hold — keyboard focus drives the same hold via the pill triggers.
-    <div
-      // Full-bleed scroll viewport: -mx-5 cancels the mounting row's px-5
-      // gutter (ChannelComposerActivityRow and the thread panel's
-      // THREAD_PANEL_COMPOSER_GUTTER_CLASS — change together) and the
-      // scroller re-adds it as internal padding. Overflowing pills then clip
-      // at the CONTAINER's visual edge — where the edge fades sit — instead
-      // of getting cut at the padded content box, 20px shy of the edge with
-      // a dead gutter after the fade. At rest nothing changes: the padding
-      // keeps the first pill aligned to the gutter.
-      className="relative -mx-5 min-w-0 flex-1"
-      // Exposes the membership hold to the e2e suite: width pins no longer
-      // engage on bar hover alone, so tests need this to know the hold is
-      // armed before mutating membership.
-      data-hold={holdActive ? "true" : undefined}
-      data-testid="bot-activity-strip"
-      onMouseEnter={() => setBarHovered(true)}
-      onMouseLeave={() => setBarHovered(false)}
-    >
-      {/* layoutScroll keeps the slot layout animations correct while the
+    <ComposerStripAvatarScopeContext.Provider value={avatarScopeId}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: hover-only hold — keyboard focus drives the same hold via the pill triggers. */}
+      <div
+        // Full-bleed scroll viewport: -mx-5 cancels the mounting row's px-5
+        // gutter (ChannelComposerActivityRow and the thread panel's
+        // THREAD_PANEL_COMPOSER_GUTTER_CLASS — change together) and the
+        // scroller re-adds it as internal padding. Overflowing pills then clip
+        // at the CONTAINER's visual edge — where the edge fades sit — instead
+        // of getting cut at the padded content box, 20px shy of the edge with
+        // a dead gutter after the fade. At rest nothing changes: the padding
+        // keeps the first pill aligned to the gutter.
+        className="relative -mx-5 min-w-0 flex-1"
+        // Exposes the membership hold to the e2e suite: width pins no longer
+        // engage on bar hover alone, so tests need this to know the hold is
+        // armed before mutating membership.
+        data-hold={holdActive ? "true" : undefined}
+        data-testid="bot-activity-strip"
+        onMouseEnter={() => setBarHovered(true)}
+        onMouseLeave={() => setBarHovered(false)}
+      >
+        {/* layoutScroll keeps the slot layout animations correct while the
           strip is scrolled — motion measures positions relative to the
           scroll offset instead of jumping. The negative-margin/padding pair
           gives focus rings and pill shadows room inside the clip box
           without changing the row's height. px-5 restores the row gutter
           inside the full-bleed viewport (see the wrapper above). */}
-      <motion.div
-        className="-my-1 flex items-center overflow-x-auto overscroll-x-contain px-5 py-1 scrollbar-none [&::-webkit-scrollbar]:hidden"
-        data-testid="bot-activity-strip-scroller"
-        layoutScroll
-        onScroll={updateFades}
-        ref={scrollerRef}
-      >
-        <div
-          // The overflow-fade hook resize-observes this wrapper as its proxy
-          // for content size. min-w-max keeps it from collapsing to the
-          // scroller's width (it is a shrinkable flex item), so late content
-          // growth — label tickers swap AFTER a resize settles — still
-          // changes an observed box and refreshes the fades. A lone item
-          // instead gets min-w-0 so it can shrink with the container
-          // (shrinkToFit) rather than overflow into scroll.
-          className={cn(
-            "flex items-center gap-3",
-            itemCount === 1 ? "min-w-0" : "min-w-max",
-          )}
+        <motion.div
+          className="-my-1 flex items-center overflow-x-auto overscroll-x-contain px-5 py-1 scrollbar-none [&::-webkit-scrollbar]:hidden"
+          data-testid="bot-activity-strip-scroller"
+          layoutScroll
+          onScroll={updateFades}
+          ref={scrollerRef}
         >
-          <AnimatePresence initial={false}>
-            {orderedAgents.map((agent, index) => {
-              const guardsOpenCard =
-                activeCardIndex !== -1 && index <= activeCardIndex;
-              return (
+          <div
+            // The overflow-fade hook resize-observes this wrapper as its proxy
+            // for content size. min-w-max keeps it from collapsing to the
+            // scroller's width (it is a shrinkable flex item), so late content
+            // growth — label tickers swap AFTER a resize settles — still
+            // changes an observed box and refreshes the fades. A lone item
+            // instead gets min-w-0 so it can shrink with the container
+            // (shrinkToFit) rather than overflow into scroll.
+            className={cn(
+              "flex items-center gap-3",
+              itemCount === 1 ? "min-w-0" : "min-w-max",
+            )}
+          >
+            <AnimatePresence initial={false}>
+              {orderedAgents.map((agent, index) => {
+                const guardsOpenCard =
+                  activeCardIndex !== -1 && index <= activeCardIndex;
+                return (
+                  <AnimatedPillSlot
+                    freezeLayout={guardsOpenCard}
+                    key={agent.pubkey}
+                    shouldReduceMotion={Boolean(shouldReduceMotion)}
+                    shrinkToFit={itemCount === 1}
+                  >
+                    {(isMoving) => (
+                      <BotActivityAgentPill
+                        agent={agent}
+                        avatarUrl={
+                          profiles?.[agent.pubkey.toLowerCase()]?.avatarUrl ??
+                          null
+                        }
+                        channelId={channelId}
+                        holdLabelSwap={isMoving}
+                        hover={hover}
+                        onOpenAgentSession={onOpenAgentSession}
+                        pinWidth={guardsOpenCard}
+                        profiles={profiles}
+                      />
+                    )}
+                  </AnimatedPillSlot>
+                );
+              })}
+              {typingIndicator == null ? null : (
                 <AnimatedPillSlot
-                  freezeLayout={guardsOpenCard}
-                  key={agent.pubkey}
+                  // The typing group trails every pill, so its movement can
+                  // never displace an open card (anchored at or left of it).
+                  freezeLayout={false}
+                  key="typing"
                   shouldReduceMotion={Boolean(shouldReduceMotion)}
                   shrinkToFit={itemCount === 1}
                 >
-                  {(isMoving) => (
-                    <BotActivityAgentPill
-                      agent={agent}
-                      avatarUrl={
-                        profiles?.[agent.pubkey.toLowerCase()]?.avatarUrl ??
-                        null
-                      }
-                      channelId={channelId}
-                      holdLabelSwap={isMoving}
-                      hover={hover}
-                      onOpenAgentSession={onOpenAgentSession}
-                      pinWidth={guardsOpenCard}
-                      profiles={profiles}
-                    />
+                  {() => (
+                    <div
+                      className={cn(
+                        // Cap like the pills (which use max-w-50 each) so a
+                        // long "X, Y, and N more are typing" label truncates
+                        // instead of inflating the scroll extent.
+                        "flex h-7 min-w-0 max-w-64 items-center",
+                        // Composer-edge alignment when the typing group leads
+                        // the strip (no pills): 0.75rem/1rem composer padding
+                        // + 1px border. Mirrors the standalone row's old
+                        // inset, and now animates via the slot's layout spring
+                        // when pills come and go.
+                        orderedAgents.length === 0 && "pl-3.25 sm:pl-4.25",
+                      )}
+                      data-testid="bot-activity-typing-slot"
+                    >
+                      {typingIndicator}
+                    </div>
                   )}
                 </AnimatedPillSlot>
-              );
-            })}
-            {typingIndicator == null ? null : (
-              <AnimatedPillSlot
-                // The typing group trails every pill, so its movement can
-                // never displace an open card (anchored at or left of it).
-                freezeLayout={false}
-                key="typing"
-                shouldReduceMotion={Boolean(shouldReduceMotion)}
-                shrinkToFit={itemCount === 1}
-              >
-                {() => (
-                  <div
-                    className={cn(
-                      // Cap like the pills (which use max-w-50 each) so a
-                      // long "X, Y, and N more are typing" label truncates
-                      // instead of inflating the scroll extent.
-                      "flex h-7 min-w-0 max-w-64 items-center",
-                      // Composer-edge alignment when the typing group leads
-                      // the strip (no pills): 0.75rem/1rem composer padding
-                      // + 1px border. Mirrors the standalone row's old
-                      // inset, and now animates via the slot's layout spring
-                      // when pills come and go.
-                      orderedAgents.length === 0 && "pl-3.25 sm:pl-4.25",
-                    )}
-                    data-testid="bot-activity-typing-slot"
-                  >
-                    {typingIndicator}
-                  </div>
-                )}
-              </AnimatedPillSlot>
-            )}
-          </AnimatePresence>
-        </div>
-      </motion.div>
-      {/* Edge fades: obvious "more pills off view" affordance. Rendered only
+              )}
+            </AnimatePresence>
+          </div>
+        </motion.div>
+        {/* Edge fades: obvious "more pills off view" affordance. Rendered only
           for a side that actually has clipped content, so they never dim a
           fully visible strip. They sit at the full-bleed viewport's edges —
           the container's visual edges — and w-12 spans the 20px gutter plus
           a soft zone over the pills scrolling under it. */}
-      {fades.start ? (
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-linear-to-r from-background via-background/60 to-transparent"
-          data-testid="bot-activity-strip-fade-start"
-        />
-      ) : null}
-      {fades.end ? (
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-linear-to-l from-background via-background/60 to-transparent"
-          data-testid="bot-activity-strip-fade-end"
-        />
-      ) : null}
-    </div>
+        {fades.start ? (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-linear-to-r from-background via-background/60 to-transparent"
+            data-testid="bot-activity-strip-fade-start"
+          />
+        ) : null}
+        {fades.end ? (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-linear-to-l from-background via-background/60 to-transparent"
+            data-testid="bot-activity-strip-fade-end"
+          />
+        ) : null}
+      </div>
+    </ComposerStripAvatarScopeContext.Provider>
   );
 }
