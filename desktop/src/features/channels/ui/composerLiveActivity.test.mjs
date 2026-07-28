@@ -5,6 +5,7 @@ import {
   deriveActivityPillLabel,
   deriveAgentWorkingOrder,
   deriveLastLiveAt,
+  partitionComposerWorkingAgents,
 } from "./composerLiveActivity.ts";
 
 const CHANNEL = "channel-1";
@@ -194,6 +195,122 @@ test("deriveActivityPillLabel keeps a stable id while a message streams", () => 
   assert.equal(first.id, "msg-1");
   assert.equal(extended.id, "msg-1");
   assert.equal(extended.label, "Pass 1: reading the composer wiring");
+});
+
+/** Lifecycle noise item ("Turn started") — meaningful:false, never headlines. */
+const turnStartedLifecycle = (timestamp, channelId = CHANNEL) => ({
+  id: `lifecycle-turn-${timestamp}`,
+  type: "lifecycle",
+  renderClass: "status",
+  title: "Turn started",
+  text: "",
+  timestamp,
+  channelId,
+});
+
+/** Fake partition readers over pubkey → source / transcript maps. */
+const partitionReaders = (sources, transcripts) => ({
+  getTranscript: (pubkey) => transcripts.get(pubkey) ?? [],
+  getWorkingSource: (pubkey) => sources.get(pubkey) ?? "none",
+});
+
+test("partitionComposerWorkingAgents pills observer-backed agents regardless of transcript", () => {
+  const partition = partitionComposerWorkingAgents({
+    channelId: CHANNEL,
+    ...partitionReaders(new Map([["alpha", "observer"]]), new Map()),
+    pubkeys: ["alpha"],
+  });
+  assert.deepEqual(partition, {
+    pillPubkeys: ["alpha"],
+    typingGroupPubkeys: [],
+  });
+});
+
+test("partitionComposerWorkingAgents groups typing agents with nothing to show", () => {
+  // First-ever activity in the channel: no transcript at all.
+  const partition = partitionComposerWorkingAgents({
+    channelId: CHANNEL,
+    ...partitionReaders(new Map([["alpha", "typing"]]), new Map()),
+    pubkeys: ["alpha"],
+  });
+  assert.deepEqual(partition, {
+    pillPubkeys: [],
+    typingGroupPubkeys: ["alpha"],
+  });
+});
+
+test("partitionComposerWorkingAgents keeps a typing agent's pill across the turn-end gap", () => {
+  // Turn completed but the agent is still typing: the prior turn's real
+  // action keeps the agent pill-worthy — the pill relabels instead of
+  // demoting to the typing group.
+  const partition = partitionComposerWorkingAgents({
+    channelId: CHANNEL,
+    ...partitionReaders(
+      new Map([["alpha", "typing"]]),
+      new Map([
+        ["alpha", [thought("Editing ChannelPane", secondsBeforeNow(9))]],
+      ]),
+    ),
+    pubkeys: ["alpha"],
+  });
+  assert.deepEqual(partition, {
+    pillPubkeys: ["alpha"],
+    typingGroupPubkeys: [],
+  });
+});
+
+test("partitionComposerWorkingAgents ignores lifecycle-noise-only transcripts", () => {
+  // A transcript holding only "Turn started" noise (seeded turns, no content
+  // frames) is NOT pill-worthy — nothing would render in the hover feed.
+  const partition = partitionComposerWorkingAgents({
+    channelId: CHANNEL,
+    ...partitionReaders(
+      new Map([["alpha", "typing"]]),
+      new Map([["alpha", [turnStartedLifecycle(secondsBeforeNow(5))]]]),
+    ),
+    pubkeys: ["alpha"],
+  });
+  assert.deepEqual(partition, {
+    pillPubkeys: [],
+    typingGroupPubkeys: ["alpha"],
+  });
+});
+
+test("partitionComposerWorkingAgents scopes pill-worthiness to the channel", () => {
+  // Real work in ANOTHER channel must not promote this channel's typing.
+  const partition = partitionComposerWorkingAgents({
+    channelId: CHANNEL,
+    ...partitionReaders(
+      new Map([["alpha", "typing"]]),
+      new Map([
+        ["alpha", [thought("Other work", secondsBeforeNow(3), OTHER_CHANNEL)]],
+      ]),
+    ),
+    pubkeys: ["alpha"],
+  });
+  assert.deepEqual(partition, {
+    pillPubkeys: [],
+    typingGroupPubkeys: ["alpha"],
+  });
+});
+
+test("partitionComposerWorkingAgents splits a mixed roster preserving order", () => {
+  const partition = partitionComposerWorkingAgents({
+    channelId: CHANNEL,
+    ...partitionReaders(
+      new Map([
+        ["alpha", "observer"],
+        ["beta", "typing"],
+        ["gamma", "typing"],
+      ]),
+      new Map([["gamma", [thought("Prior work", secondsBeforeNow(30))]]]),
+    ),
+    pubkeys: ["alpha", "beta", "gamma"],
+  });
+  assert.deepEqual(partition, {
+    pillPubkeys: ["alpha", "gamma"],
+    typingGroupPubkeys: ["beta"],
+  });
 });
 
 /** Fake working-state reader over pubkey → [{channelId, anchorAt}] entries. */

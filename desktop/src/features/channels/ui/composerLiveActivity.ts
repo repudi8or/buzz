@@ -74,6 +74,60 @@ export function deriveActivityPillLabel({
   return null;
 }
 
+/**
+ * Partition a channel's working agents into pill-rendered agents and the
+ * combined typing-indicator group.
+ *
+ * Pill-worthiness is capability-based, not source-based: an agent renders as
+ * a pill when there is an agent session worth hovering and opening — an
+ * active observer turn, or a transcript with a headline-able item for this
+ * channel left behind by a prior turn. Typing agents with nothing to show
+ * fold into the combined typing group with the human typers.
+ *
+ * This is what keeps a pill stable across the turn-end gap: an agent whose
+ * observer turn just completed but who is still typing keeps its pill (the
+ * label swaps to "is typing…" in place) instead of demoting to the group,
+ * and re-typing after a finished turn relights the pill rather than
+ * mounting a group item. Only an agent's FIRST-ever activity in the channel
+ * can start in the typing group.
+ *
+ * `getWorkingSource` / `getTranscript` are injected so the helper stays pure
+ * and unit-testable; callers pass the working signal's and observer store's
+ * cached readers.
+ */
+export function partitionComposerWorkingAgents({
+  channelId,
+  getTranscript,
+  getWorkingSource,
+  pubkeys,
+}: {
+  channelId: string | null;
+  getTranscript: (pubkey: string) => readonly TranscriptItem[];
+  getWorkingSource: (pubkey: string) => "observer" | "typing" | "none";
+  pubkeys: readonly string[];
+}): { pillPubkeys: string[]; typingGroupPubkeys: string[] } {
+  const pillPubkeys: string[] = [];
+  const typingGroupPubkeys: string[] = [];
+
+  for (const pubkey of pubkeys) {
+    if (getWorkingSource(pubkey) !== "typing") {
+      pillPubkeys.push(pubkey);
+      continue;
+    }
+    const headline = deriveActivityPillLabel({
+      channelId,
+      transcript: getTranscript(pubkey),
+    });
+    if (headline !== null) {
+      pillPubkeys.push(pubkey);
+    } else {
+      typingGroupPubkeys.push(pubkey);
+    }
+  }
+
+  return { pillPubkeys, typingGroupPubkeys };
+}
+
 /** Minimal working-state shape the ordering needs (see agentWorkingSignal). */
 export type AgentWorkingChannelAnchor = {
   channelId: string;

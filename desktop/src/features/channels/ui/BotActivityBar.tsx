@@ -45,7 +45,7 @@ const TYPING_LABEL_ID = "typing-override";
  * Perceptual duration shared by the pill reorder spring and the opacity dip
  * keyframes so the fade lands together with the layout switch.
  */
-const PILL_REORDER_DURATION_S = 0.9;
+const PILL_REORDER_DURATION_S = 0.45;
 /**
  * Enter/exit fade+scale for a pill slot. Deliberately much quicker than the
  * reorder spring — the slow reorder pacing must not bleed into membership
@@ -213,11 +213,14 @@ function useStripHoverPopover(): StripHoverPopover {
  * itself — flat, no inset box, no tab strip — while clicking the pill opens
  * the agent's full runtime in the auxiliary panel.
  *
- * Only observer-backed agents reach this pill: typing-fallback-only agents
- * are diverted into the combined typing indicator group by
- * ChannelComposerActivityRow before the strip renders. An observer-backed
- * agent that ALSO starts typing keeps its pill — the label relabels in
- * place to "is typing…" for the duration (see the typing override below).
+ * Only pill-worthy agents reach this pill (an active observer turn, or a
+ * headline-able transcript left by a prior turn — see
+ * partitionComposerWorkingAgents): typing agents with nothing to hover or
+ * open are diverted into the combined typing indicator group by
+ * ChannelComposerActivityRow before the strip renders. An agent that is
+ * typing — mid-turn or across the turn-end gap — keeps its pill, with the
+ * label relabeled in place to "is typing…" for the duration (see the
+ * typing override below).
  */
 function BotActivityAgentPill({
   agent,
@@ -472,7 +475,16 @@ function AnimatedPillSlot({
       // instead of compressing every pill into an unreadable sliver. A lone
       // pill instead shrinks to fit (min-w-0) so it never scrolls.
       className={cn("flex", shrinkToFit ? "min-w-0" : "shrink-0")}
-      exit={{ opacity: 0, scale: 0.9 }}
+      // Inline exit transition: a slot removed mid-travel would otherwise
+      // inherit the slow isMoving opacity tween and fade out sluggishly.
+      exit={{
+        opacity: 0,
+        scale: 0.9,
+        transition: {
+          duration: PILL_ENTER_EXIT_DURATION_S,
+          ease: "easeOut",
+        },
+      }}
       initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.9 }}
       layout={!shouldReduceMotion && !freezeLayout}
       onLayoutAnimationComplete={() => setIsMoving(false)}

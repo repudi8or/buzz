@@ -6,9 +6,14 @@ import {
   useChannelWorkingAgentPubkeys,
 } from "@/features/agents/agentWorkingSignal";
 import {
+  getAgentTranscript,
+  subscribeAgentObserverStore,
+} from "@/features/agents/observerRelayStore";
+import {
   BotActivityComposerAction,
   type BotActivityAgent,
 } from "@/features/channels/ui/BotActivityBar";
+import { partitionComposerWorkingAgents } from "@/features/channels/ui/composerLiveActivity";
 import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { Channel } from "@/shared/api/types";
@@ -19,11 +24,15 @@ import type { Channel } from "@/shared/api/types";
  * ONE strip (BotActivityComposerAction) so both share the scroller, edge
  * fades, and layout/enter/exit animations.
  *
- * The working set splits by signal source: observer-backed agents get the
- * interactive activity pills, while typing-fallback-only agents (no observer
- * turn — nothing to hover or open) merge with the human typers into ONE
- * combined typing indicator group ("X and Y are typing…") with an
- * overlapping avatar set.
+ * The working set splits by pill-worthiness (capability, not signal
+ * source — see partitionComposerWorkingAgents): agents with a session worth
+ * hovering/opening (an active observer turn, or a headline-able transcript
+ * left by a prior turn) get the interactive activity pills, while
+ * typing-fallback agents with nothing to show merge with the human typers
+ * into ONE combined typing indicator group ("X and Y are typing…") with an
+ * overlapping avatar set. An agent whose turn just ended but who is still
+ * typing therefore keeps its pill (relabeled "is typing…") instead of
+ * demoting to the group.
  *
  * The row has a FIXED height (not min-h): it must not grow when the inline
  * bot-activity button (h-7) mounts, or the bottom-anchored composer above it
@@ -53,28 +62,44 @@ export function ChannelComposerActivityRow({
   // whose typing signal never arrives — and vice versa.
   const workingBotPubkeys = useChannelWorkingAgentPubkeys(channelId);
 
-  // Typing-fallback-only pubkeys (channel-scoped working source "typing").
+  // Typing-group pubkeys: typing-fallback agents with NO headline-able
+  // transcript for this channel (see partitionComposerWorkingAgents).
+  // The partition reads two stores — the working signal (source) and the
+  // observer store (transcripts) — so the snapshot subscribes to both:
+  // a transcript landing must be able to promote a typing agent to a pill.
   // Snapshot is a joined string so useSyncExternalStore only re-renders when
-  // the partition actually changes, not on every signal write.
+  // the partition actually changes, not on every store write.
+  const subscribeToPartitionSources = React.useCallback(
+    (onChange: () => void) => {
+      const unsubscribeWorking = subscribeAgentWorkingSignal(onChange);
+      const unsubscribeObserver = subscribeAgentObserverStore(onChange);
+      return () => {
+        unsubscribeWorking();
+        unsubscribeObserver();
+      };
+    },
+    [],
+  );
   const getAgentTypingSnapshot = React.useCallback(
     () =>
-      workingBotPubkeys
-        .filter(
-          (pubkey) =>
-            getAgentWorkingState(pubkey, channelId).source === "typing",
-        )
-        .join(","),
+      partitionComposerWorkingAgents({
+        channelId,
+        getTranscript: (pubkey) => getAgentTranscript(pubkey),
+        getWorkingSource: (pubkey) =>
+          getAgentWorkingState(pubkey, channelId).source,
+        pubkeys: workingBotPubkeys,
+      }).typingGroupPubkeys.join(","),
     [channelId, workingBotPubkeys],
   );
   const agentTypingKey = React.useSyncExternalStore(
-    subscribeAgentWorkingSignal,
+    subscribeToPartitionSources,
     getAgentTypingSnapshot,
   );
   const agentTypingPubkeys = React.useMemo(
     () => (agentTypingKey === "" ? [] : agentTypingKey.split(",")),
     [agentTypingKey],
   );
-  const observerWorkingPubkeys = React.useMemo(() => {
+  const pillBotPubkeys = React.useMemo(() => {
     const typingSet = new Set(agentTypingPubkeys);
     return workingBotPubkeys.filter((pubkey) => !typingSet.has(pubkey));
   }, [agentTypingPubkeys, workingBotPubkeys]);
@@ -117,8 +142,7 @@ export function ChannelComposerActivityRow({
             edge fades, and layout/enter/exit animations. When the row gets
             tight the strip scrolls horizontally (edge fades signal clipped
             items) rather than compressing. */}
-        {observerWorkingPubkeys.length > 0 ||
-        combinedTypingPubkeys.length > 0 ? (
+        {pillBotPubkeys.length > 0 || combinedTypingPubkeys.length > 0 ? (
           <BotActivityComposerAction
             agents={agents}
             channelId={channelId}
@@ -138,7 +162,7 @@ export function ChannelComposerActivityRow({
                 />
               ) : null
             }
-            workingBotPubkeys={observerWorkingPubkeys}
+            workingBotPubkeys={pillBotPubkeys}
           />
         ) : null}
       </div>
