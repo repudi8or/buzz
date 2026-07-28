@@ -46,6 +46,12 @@ const TYPING_LABEL_ID = "typing-override";
  * keyframes so the fade lands together with the layout switch.
  */
 const PILL_REORDER_DURATION_S = 0.9;
+/**
+ * Enter/exit fade+scale for a pill slot. Deliberately much quicker than the
+ * reorder spring — the slow reorder pacing must not bleed into membership
+ * changes, which should feel snappy.
+ */
+const PILL_ENTER_EXIT_DURATION_S = 0.18;
 
 /**
  * Strip-level hover popover state: ONE active pill and ONE timer for the
@@ -475,13 +481,31 @@ function AnimatedPillSlot({
         shouldReduceMotion
           ? { duration: 0 }
           : {
-              type: "spring",
-              duration: PILL_REORDER_DURATION_S,
-              bounce: 0.15,
-              opacity: {
-                type: "tween",
+              // Only the slot's travel gets the slow reorder pacing; the
+              // enter/exit fade+scale runs on its own fast tween below.
+              layout: {
+                type: "spring",
                 duration: PILL_REORDER_DURATION_S,
-                ease: "linear",
+                bounce: 0.15,
+              },
+              // While the slot travels, opacity plays the dip keyframes and
+              // must land together with the layout spring; otherwise it is
+              // an enter/exit fade and should be quick.
+              opacity: isMoving
+                ? {
+                    type: "tween",
+                    duration: PILL_REORDER_DURATION_S,
+                    ease: "linear",
+                  }
+                : {
+                    type: "tween",
+                    duration: PILL_ENTER_EXIT_DURATION_S,
+                    ease: "easeOut",
+                  },
+              scale: {
+                type: "tween",
+                duration: PILL_ENTER_EXIT_DURATION_S,
+                ease: "easeOut",
               },
             }
       }
