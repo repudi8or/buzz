@@ -2,6 +2,7 @@ import * as React from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import {
+  getAgentChannelTypingSince,
   getAgentWorkingState,
   subscribeAgentWorkingSignal,
 } from "@/features/agents/agentWorkingSignal";
@@ -38,6 +39,8 @@ const HOVER_OPEN_DELAY_MS = 150;
 const HOVER_CLOSE_DELAY_MS = 180;
 /** Ticker key for the generic label shown before the first action lands. */
 const GENERIC_LABEL_ID = "generic-working";
+/** Ticker key for the typing override label (see BotActivityAgentPill). */
+const TYPING_LABEL_ID = "typing-override";
 /**
  * Perceptual duration shared by the pill reorder spring and the opacity dip
  * keyframes so the fade lands together with the layout switch.
@@ -206,7 +209,9 @@ function useStripHoverPopover(): StripHoverPopover {
  *
  * Only observer-backed agents reach this pill: typing-fallback-only agents
  * are diverted into the combined typing indicator group by
- * ChannelComposerActivityRow before the strip renders.
+ * ChannelComposerActivityRow before the strip renders. An observer-backed
+ * agent that ALSO starts typing keeps its pill — the label relabels in
+ * place to "is typing…" for the duration (see the typing override below).
  */
 function BotActivityAgentPill({
   agent,
@@ -242,10 +247,26 @@ function BotActivityAgentPill({
     () => deriveActivityPillLabel({ channelId, transcript }),
     [channelId, transcript],
   );
-  const activeId = headline?.id ?? GENERIC_LABEL_ID;
+  // Typing overrides the action headline IN PLACE: when this observer-backed
+  // agent's typing signal is also on for the channel (it starts composing its
+  // reply mid-turn), the pill's ticker swaps to "is typing…" — same slot,
+  // avatar, and hover feed — instead of the stale last action persisting or a
+  // second typing-group item appearing. Raw registry read, because
+  // getAgentWorkingState folds typing away under observer precedence.
+  const typingSince = React.useSyncExternalStore(
+    subscribeAgentWorkingSignal,
+    () => getAgentChannelTypingSince(agent.pubkey, channelId),
+  );
+  const isTyping = typingSince !== null;
+  const activeId = isTyping
+    ? TYPING_LABEL_ID
+    : (headline?.id ?? GENERIC_LABEL_ID);
   // No action headline yet (see deriveActivityPillLabel) — show the
-  // agent-named generic working label until the first action lands.
-  const activeLabel = headline?.label ?? `${agent.name} is working…`;
+  // agent-named generic working label until the first action lands. When
+  // typing ends, the ticker swaps back to the last action headline.
+  const activeLabel = isTyping
+    ? `${agent.name} is typing…`
+    : (headline?.label ?? `${agent.name} is working…`);
   // The rendered label lags the derived one while the pill is moving: the
   // push-up ticker plays after the slot settles (or immediately when idle).
   // Keyed by transcript item id, not label text — a NEW action swaps, while
