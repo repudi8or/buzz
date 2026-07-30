@@ -2,6 +2,7 @@ import * as React from "react";
 import { Hash, LogIn } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
+import { useChannelWorkingAgentPubkeys } from "@/features/agents/agentWorkingSignal";
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import { ComposerDockBackdrop } from "@/features/messages/ui/ComposerDockBackdrop";
 import { ComposerUploadProgressOverlay } from "@/features/messages/ui/ComposerUploadProgressOverlay";
@@ -399,18 +400,18 @@ export const ChannelPane = React.memo(function ChannelPane({
     !isComposerDisabled &&
     !isMainDeferredEditPending &&
     !isSinglePanelView;
-  const hasTypingActivity = typingPubkeys.length > 0;
-  // Unified working set for the composer bar: observer-derived turns primary,
-  // bot typing fallback (both folded together by agentWorkingSignal). This is
-  // what makes the bar show for an agent whose observer stream is live but
-  // whose typing signal never arrives — and vice versa.
+  // Working set for the composer bar (observer turns + bot-typing fallback,
+  // folded by agentWorkingSignal); gates the dock's reserved bottom rail.
   const composerWorkingBotPubkeys = useChannelWorkingAgentPubkeys(
     activeChannel?.id ?? null,
   );
-  const hasComposerBotActivity = composerWorkingBotPubkeys.length > 0;
+  // Background card mints surface in the same rail ("Minting card…" chip),
+  // so they must also reserve the activity row.
   const hasCardMintActivity = useCardMintJobs().length > 0;
   const hasComposerBottomActivity =
-    hasComposerBotActivity || hasTypingActivity || hasCardMintActivity;
+    composerWorkingBotPubkeys.length > 0 ||
+    typingPubkeys.length > 0 ||
+    hasCardMintActivity;
   const threadComposerBotTypingPubkeys = React.useMemo(() => {
     if (!openThreadHeadId) return [];
     return botTypingEntries
@@ -795,10 +796,9 @@ export const ChannelPane = React.memo(function ChannelPane({
                   }
                   showTopBorder={false}
                 />
-                {/* The activity accessory is anchored in the dock's reserved
-                    bottom rail, so fading it cannot change the observed
-                    overlay height or move the conversation. Its natural
-                    content height remains responsive. */}
+                {/* The accessory is anchored in the dock's reserved bottom
+                    rail, so fading it cannot change the observed overlay
+                    height or move the conversation. */}
                 <ComposerActivityAccessory visible={hasComposerBottomActivity}>
                   <ChannelComposerActivityRow
                     agents={activityAgents}
@@ -895,8 +895,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                 )}
                 threadReplyUnreadCounts={threadReplyUnreadCounts}
                 activityAccessoryVisible={
-                  hasThreadComposerBotActivity ||
-                  threadTypingPubkeys.length > 0
+                  hasThreadComposerBotActivity || threadTypingPubkeys.length > 0
                 }
                 activityAccessoryContent={
                   hasThreadComposerBotActivity ||
