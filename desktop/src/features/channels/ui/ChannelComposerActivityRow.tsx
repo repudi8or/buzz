@@ -9,6 +9,7 @@ import {
   getAgentTranscript,
   subscribeAgentObserverStore,
 } from "@/features/agents/observerRelayStore";
+import { CardMintComposerChip } from "@/features/agents/ui/CardMintComposerChip";
 import {
   BotActivityComposerAction,
   type BotActivityAgent,
@@ -136,7 +137,8 @@ export function ChannelComposerActivityRow({
       className="h-8.5 overflow-visible bg-background px-5 pb-1.5 pt-0"
       data-testid="channel-composer-activity-row"
     >
-      <div className="flex h-full w-full items-center overflow-visible">
+      <div className="flex h-full w-full items-center gap-2 overflow-visible">
+        <CardMintComposerChip />
         {/* One strip hosts both groups: working pills plus the typing group
             as the strip's trailing slot sibling, so they share the scroller,
             edge fades, and layout/enter/exit animations. When the row gets

@@ -37,7 +37,6 @@ import { getThreadPanelLayout } from "@/features/channels/lib/threadPanelLayout"
 import { useThreadViewMode } from "@/features/channels/lib/threadViewModePreference";
 import { useThreadViewModeSwitch } from "@/features/channels/ui/useThreadViewModeSwitch";
 import { useFocusDrawerPresence } from "@/features/channels/ui/useFocusDrawerPresence";
-import { useChannelWorkingAgentPubkeys } from "@/features/agents/agentWorkingSignal";
 import { useCardMintJobs } from "@/features/agents/cardMintStore";
 import { BotActivityComposerAction } from "@/features/channels/ui/BotActivityBar";
 import { ChannelComposerActivityRow } from "@/features/channels/ui/ChannelComposerActivityRow";
@@ -287,7 +286,6 @@ export const ChannelPane = React.memo(function ChannelPane({
     onEdit(target);
     return true;
   }, [findLastOwnEditable, messages, onEdit]);
-
   const handleEditLastOwnThreadMessage = React.useCallback((): boolean => {
     if (!onEdit) return false;
     const scope: TimelineMessage[] = [];
@@ -298,9 +296,7 @@ export const ChannelPane = React.memo(function ChannelPane({
     onEdit(target);
     return true;
   }, [findLastOwnEditable, onEdit, threadHeadMessage, threadMessages]);
-
   const timeoutState = useTimeoutState();
-
   // A moderation DM (1:1 with the relay identity) is read-only for the member;
   // only DMs pay for the NIP-11 `self` lookup. Fails open: no `relaySelf` →
   // ordinary DM, composer enabled.
@@ -310,7 +306,6 @@ export const ChannelPane = React.memo(function ChannelPane({
     currentPubkey,
     relaySelfQuery.data,
   );
-
   const isComposerDisabled =
     !activeChannel?.isMember ||
     activeChannel.archivedAt !== null ||
@@ -320,7 +315,6 @@ export const ChannelPane = React.memo(function ChannelPane({
     isSending;
   const knownAgentPubkeys = React.useMemo(() => {
     const pubkeys = new Set<string>();
-
     for (const pubkey of agentPubkeys ?? []) {
       pubkeys.add(pubkey.toLowerCase());
     }
@@ -330,14 +324,12 @@ export const ChannelPane = React.memo(function ChannelPane({
     for (const agent of activityAgents) {
       pubkeys.add(agent.pubkey.toLowerCase());
     }
-
     return pubkeys;
   }, [activityAgents, agentPubkeys, agentSessionAgents]);
   const completeWelcomeComposerBanner = React.useCallback(() => {
     if (!activeChannelId || !isActiveWelcomeChannel) {
       return;
     }
-
     clearWelcomeComposerDismissTimer();
     completedWelcomeBannerChannelIdsRef.current.add(activeChannelId);
     setWelcomeComposerBannerState("complete");
@@ -369,10 +361,8 @@ export const ChannelPane = React.memo(function ChannelPane({
         isActiveWelcomeChannel &&
         (containsWelcomePersonaMention(content) ||
           mentionsKnownAgent(mentionPubkeys, knownAgentPubkeys));
-
       messageTimelineRef.current?.scrollToBottomOnNextUpdate();
       await onSendMessage(content, mentionPubkeys, mediaTags, channelId);
-
       if (
         channelId &&
         channelId !== activeChannelId &&
@@ -381,7 +371,6 @@ export const ChannelPane = React.memo(function ChannelPane({
       ) {
         await goChannel(channelId, { replace: true });
       }
-
       if (shouldCompleteWelcomeBanner) {
         completeWelcomeComposerBanner();
       }
@@ -435,7 +424,6 @@ export const ChannelPane = React.memo(function ChannelPane({
       }),
     [activeChannel, currentPubkey, profiles],
   );
-
   const handleWelcomeAddAgent = React.useCallback(() => {
     onAddAgent?.({
       beforeSend: () =>
@@ -477,7 +465,6 @@ export const ChannelPane = React.memo(function ChannelPane({
     for (const message of threadAllMessages) {
       messagesById.set(message.id, message);
     }
-
     return buildVideoReviewContextsByMessageId({
       channelId: activeChannel?.id ?? null,
       channelName: activeChannel?.name,
@@ -498,7 +485,6 @@ export const ChannelPane = React.memo(function ChannelPane({
     threadAllMessages,
     threadHeadMessage,
   ]);
-
   const isOverlay = useIsThreadPanelOverlay();
   const useSplitAuxiliaryPane = !isSinglePanelView && !isOverlay;
   const threadViewMode = useThreadViewMode();
@@ -591,7 +577,6 @@ export const ChannelPane = React.memo(function ChannelPane({
           data-testid="channel-shared-header-backdrop"
         />
       ) : null}
-
       {!isSinglePanelView ? (
         <section
           aria-label="Channel messages and composer"
@@ -817,7 +802,6 @@ export const ChannelPane = React.memo(function ChannelPane({
           ) : null}
         </section>
       ) : null}
-
       {/*
        * `AnimatePresence` keeps the focus thread drawer mounted through its exit
        * animation — without it the drawer's own existence condition
