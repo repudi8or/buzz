@@ -14,6 +14,8 @@
 //! (`Db::resolve_host`); the relay depends on the trait, not the query, so the
 //! binding is testable without a database.
 
+use std::collections::HashMap;
+
 use buzz_core::tenant::{normalize_host, CommunityId, TenantContext, MAX_HOST_LEN};
 
 /// Resolves a normalized connection host to its community, or `None` when the
@@ -155,6 +157,8 @@ impl HostResolver for buzz_db::Db {
 /// [`crate::state::TENANT_HOST_CACHE_MAX_AGE`], and concurrent misses share
 /// one read through [`crate::state::AppState::tenant_host_reads`]. Unmapped
 /// hosts and lookup errors are never cached.
+///
+/// Also applies `BUZZ_HOST_ALIASES` via [`resolve_with_aliases`].
 impl HostResolver for crate::state::AppState {
     type Error = buzz_db::DbError;
 
@@ -162,8 +166,55 @@ impl HostResolver for crate::state::AppState {
         &self,
         normalized_host: &str,
     ) -> Result<Option<CommunityId>, Self::Error> {
+        resolve_with_aliases(
+            &CachedHosts(self),
+            &self.config.host_aliases,
+            normalized_host,
+        )
+        .await
+    }
+}
+
+/// Resolve `normalized_host`, falling back to `BUZZ_HOST_ALIASES`.
+///
+/// One community may legitimately answer on more than one host (e.g. a public
+/// hostname plus an internal tailnet name). Only when the arrival host misses
+/// `communities.host` (`Ok(None)`) is it looked up as an alias key and its
+/// configured canonical host resolved instead — so the DB always wins: an
+/// alias can never shadow a real `communities.host` row, and a dangling alias
+/// fails closed with the same `Ok(None)` as any unmapped host.
+///
+/// [`bind_community`] still builds the [`TenantContext`] from the *arrival*
+/// host, so NIP-98/NIP-42 URL checks and NIP-05 labelling match whatever
+/// address the client actually used, never a canonical it may not know.
+pub async fn resolve_with_aliases<R: HostResolver>(
+    resolver: &R,
+    host_aliases: &HashMap<String, String>,
+    normalized_host: &str,
+) -> Result<Option<CommunityId>, R::Error> {
+    if let Some(community) = resolver.resolve_host(normalized_host).await? {
+        return Ok(Some(community));
+    }
+    match host_aliases.get(normalized_host) {
+        Some(canonical) => resolver.resolve_host(canonical).await,
+        None => Ok(None),
+    }
+}
+
+/// Exact `communities.host` lookup behind the tenant host cache (no aliases).
+struct CachedHosts<'a>(&'a crate::state::AppState);
+
+impl HostResolver for CachedHosts<'_> {
+    type Error = buzz_db::DbError;
+
+    async fn resolve_host(
+        &self,
+        normalized_host: &str,
+    ) -> Result<Option<CommunityId>, Self::Error> {
+        let state = self.0;
         let fresh = || {
-            self.tenant_host_cache
+            state
+                .tenant_host_cache
                 .get(normalized_host)
                 .filter(|(_, read_at)| read_at.elapsed() < crate::state::TENANT_HOST_CACHE_MAX_AGE)
                 .map(|(community, _)| community)
@@ -172,7 +223,7 @@ impl HostResolver for crate::state::AppState {
             metrics::counter!("buzz_tenant_host_cache_hits_total").increment(1);
             return Ok(Some(community));
         }
-        let _turn = self
+        let _turn = state
             .tenant_host_reads
             .turn(normalized_host.to_owned())
             .await;
@@ -181,13 +232,14 @@ impl HostResolver for crate::state::AppState {
             return Ok(Some(community));
         }
         metrics::counter!("buzz_tenant_host_cache_misses_total").increment(1);
-        let read = self
+        let read = state
             .db
             .lookup_community_by_host_read_at(normalized_host)
             .await?;
         let community = read.value.map(|record| record.id);
         if let Some(community) = community {
-            self.tenant_host_cache
+            state
+                .tenant_host_cache
                 .insert(normalized_host.to_owned(), (community, read.read_at));
         }
         Ok(community)
@@ -197,7 +249,6 @@ impl HostResolver for crate::state::AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use uuid::Uuid;
 
     /// In-memory resolver over a fixed host→community map, so the binding seam
@@ -253,6 +304,107 @@ mod tests {
             );
             assert_eq!(ctx.host(), "relay.example", "variant {variant:?}");
         }
+    }
+
+    fn aliases(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(alias, canonical)| (alias.to_string(), canonical.to_string()))
+            .collect()
+    }
+
+    /// Mirrors the request path: `AppState`'s resolver is exactly
+    /// `resolve_with_aliases` over the cached exact-host lookup.
+    struct AliasResolver {
+        inner: MapResolver,
+        aliases: HashMap<String, String>,
+    }
+
+    impl HostResolver for AliasResolver {
+        type Error = &'static str;
+        async fn resolve_host(
+            &self,
+            normalized_host: &str,
+        ) -> Result<Option<CommunityId>, Self::Error> {
+            resolve_with_aliases(&self.inner, &self.aliases, normalized_host).await
+        }
+    }
+
+    /// BUZZ_HOST_ALIASES: an unmapped alias binds to its canonical's
+    /// community, but the context keeps the ARRIVAL host so NIP-98/NIP-42
+    /// verification matches what the client actually signed.
+    #[tokio::test]
+    async fn alias_binds_to_canonicals_community_but_context_keeps_arrival_host() {
+        let r = AliasResolver {
+            inner: resolver_with("chat.example.com", 3),
+            aliases: aliases(&[("internal.tailnet.example", "chat.example.com")]),
+        };
+        let ctx = bind_community(&r, "INTERNAL.tailnet.example.")
+            .await
+            .expect("alias should bind through its canonical's community");
+        assert_eq!(ctx.community().as_uuid(), &Uuid::from_u128(3));
+        assert_eq!(ctx.host(), "internal.tailnet.example");
+    }
+
+    /// A host that is neither a community host nor an alias key still fails
+    /// closed with the generic `UnmappedHost`.
+    #[tokio::test]
+    async fn unmapped_host_with_nonempty_alias_map_still_fails_closed() {
+        let r = AliasResolver {
+            inner: resolver_with("chat.example.com", 4),
+            aliases: aliases(&[("internal.tailnet.example", "chat.example.com")]),
+        };
+        let err = bind_community(&r, "evil.example").await.unwrap_err();
+        assert!(matches!(err, BindError::UnmappedHost));
+    }
+
+    /// DB always wins: an alias naming a real `communities.host` must never
+    /// redirect it to another community.
+    #[tokio::test]
+    async fn alias_can_never_shadow_a_real_community_host() {
+        let mut inner = resolver_with("shadowed.example", 5);
+        inner.map.insert(
+            "somewhere-else.example".to_string(),
+            CommunityId::from_uuid(Uuid::from_u128(99)),
+        );
+        let r = AliasResolver {
+            inner,
+            aliases: aliases(&[("shadowed.example", "somewhere-else.example")]),
+        };
+        let ctx = bind_community(&r, "shadowed.example")
+            .await
+            .expect("the real communities.host row must win");
+        assert_eq!(ctx.community().as_uuid(), &Uuid::from_u128(5));
+    }
+
+    /// A dangling alias (canonical has no community) fails closed exactly
+    /// like an unmapped host, so it cannot be used to probe config.
+    #[tokio::test]
+    async fn alias_whose_canonical_is_missing_fails_closed() {
+        let r = AliasResolver {
+            inner: resolver_with("chat.example.com", 6),
+            aliases: aliases(&[("internal.tailnet.example", "nowhere.example")]),
+        };
+        let err = bind_community(&r, "internal.tailnet.example")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BindError::UnmappedHost));
+    }
+
+    /// A lookup error on the alias's canonical surfaces as `Lookup`, never as
+    /// a silent unmapped result.
+    #[tokio::test]
+    async fn alias_lookup_error_fails_closed_as_lookup() {
+        let mut inner = resolver_with("chat.example.com", 8);
+        inner.fail = true;
+        let r = AliasResolver {
+            inner,
+            aliases: aliases(&[("internal.tailnet.example", "chat.example.com")]),
+        };
+        let err = bind_community(&r, "internal.tailnet.example")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BindError::Lookup("db down")));
     }
 
     #[tokio::test]
