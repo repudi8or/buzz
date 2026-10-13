@@ -332,6 +332,12 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
     // Search is a current-state surface; old artifact snapshots cannot match.
     qb.push(" AND (events.kind <> 45010 OR EXISTS (SELECT 1 FROM artifact_heads ah WHERE ah.community_id=events.community_id AND ah.event_id=events.id AND NOT ah.deleted))");
 
+    // Archived identities (NIP-IA) are retired: their profiles must not match
+    // name lookups, or agents resolving `@name` can pick an archived key that
+    // shares a display name with its live replacement. Only kind:0 is fenced —
+    // messages an archived identity authored stay searchable as history.
+    qb.push(" AND (events.kind <> 0 OR NOT EXISTS (SELECT 1 FROM archived_identities ai WHERE ai.community_id=events.community_id AND ai.pubkey=encode(events.pubkey, 'hex')))");
+
     // Channel scope — see `ChannelScope` doc for the four-case mapping. The
     // emitted SQL fragments are identical to the legacy 2x2 tuple for the
     // three carry-over cases; `ChannelLessOnly` is the new fence that the

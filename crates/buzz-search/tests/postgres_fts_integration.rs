@@ -81,6 +81,10 @@ async fn insert_event(
     .expect("insert event");
 }
 
+fn to_hex(bytes: [u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn rand_bytes32() -> [u8; 32] {
     let mut out = [0u8; 32];
     let u = Uuid::new_v4();
@@ -2598,5 +2602,102 @@ async fn cancel_signals_only_the_named_backend() {
         err.as_database_error().and_then(|e| e.code()).as_deref(),
         Some("57014")
     );
+    teardown(pool, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn search_excludes_archived_identity_profiles_but_keeps_their_messages() {
+    let (pool, schema) = setup().await;
+
+    let community = mk_community(&pool, &format!("archived-{}.example", Uuid::new_v4())).await;
+    let live_pk = rand_bytes32();
+    let archived_pk = rand_bytes32();
+    let live_profile = rand_bytes32();
+    let archived_profile = rand_bytes32();
+    let archived_message = rand_bytes32();
+    insert_event(
+        &pool,
+        community,
+        live_profile,
+        live_pk,
+        0,
+        r#"{"display_name":"zephyrtester"}"#,
+        None,
+        1700000100,
+    )
+    .await;
+    insert_event(
+        &pool,
+        community,
+        archived_profile,
+        archived_pk,
+        0,
+        r#"{"display_name":"zephyrtester"}"#,
+        None,
+        1700000000,
+    )
+    .await;
+    insert_event(
+        &pool,
+        community,
+        archived_message,
+        archived_pk,
+        9,
+        "zephyrtester reporting for duty",
+        None,
+        1700000050,
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO archived_identities (community_id, pubkey, consent_path, actor, request_event_id) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(community.as_uuid())
+    .bind(to_hex(archived_pk))
+    .bind("admin")
+    .bind(to_hex(live_pk))
+    .bind(to_hex(rand_bytes32()))
+    .execute(&pool)
+    .await
+    .expect("archive identity");
+
+    let svc = SearchService::new(pool.clone());
+    let query = |kinds: Vec<i32>| SearchQuery {
+        community,
+        q: "zephyrtester".into(),
+        channel_scope: ChannelScope::Any,
+        kinds: Some(kinds),
+        authors: None,
+        since: None,
+        until: None,
+        page: 1,
+        per_page: 10,
+        mode: buzz_search::SearchMode::Prefix,
+        sort: buzz_search::SearchSort::Relevance,
+    };
+
+    let profiles = svc
+        .search(&query(vec![0]))
+        .await
+        .expect("profile search ok");
+    let ids: Vec<[u8; 32]> = profiles.hits.iter().map(|h| h.event_id).collect();
+    assert_eq!(
+        ids,
+        vec![live_profile],
+        "archived profile must not match a name lookup"
+    );
+
+    let messages = svc
+        .search(&query(vec![9]))
+        .await
+        .expect("message search ok");
+    assert_eq!(
+        messages.hits.len(),
+        1,
+        "archived author messages stay searchable"
+    );
+    assert_eq!(messages.hits[0].event_id, archived_message);
+
     teardown(pool, &schema).await;
 }
