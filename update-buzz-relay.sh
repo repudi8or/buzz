@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# Upgrade (or roll back) this host's buzz-relay, buzz-admin and buzz (CLI)
-# from source.
+# Upgrade (or roll back) this host's buzz-relay, buzz-admin, buzz (CLI) and
+# sprig (agent harness for the buzz-agent@ units) from source.
 #
 # Upgrade:
 #   1. git fetch + fast-forward (or --rebase) the checked-out branch
-#   2. cargo build --release buzz-relay, buzz-admin, buzz-cli (binary `buzz`)
+#   2. cargo build --release buzz-relay, buzz-admin, buzz-cli (binary `buzz`),
+#      sprig
 #   3. stage commit-stamped binaries in /opt/buzz/bin (live links untouched)
 #   4. stop buzz-relay, back up the database (pg_dump) and relay.env
 #   5. run DB migrations with the NEW buzz-admin (`buzz-admin migrate`)
 #   6. repoint /opt/buzz/bin/{buzz-relay,buzz-admin,buzz} and the all-users
 #      /usr/local/bin links at the new build, start the relay, wait for
 #      /_readiness
+#   7. restart running buzz-agent@ units so they use the new sprig
 #   If 5 or 6 fails, it automatically falls back: restores the pre-upgrade
 #   database, repoints the links at the previous build and restarts it.
 #
@@ -63,8 +65,10 @@ ENV_FILE=/etc/buzz/relay.env
 PG_CONTAINER="${BUZZ_PG_CONTAINER:-buzz-postgres}"
 BACKUP_ROOT="${BUZZ_BACKUP_ROOT:-$HOME/buzz-backups/relay-upgrades}"
 # Cargo packages to build, and the binaries they produce (installed + linked).
-PACKAGES=(buzz-relay buzz-admin buzz-cli)
-BINARIES=(buzz-relay buzz-admin buzz)
+PACKAGES=(buzz-relay buzz-admin buzz-cli sprig)
+BINARIES=(buzz-relay buzz-admin buzz sprig)
+# sprig is multicall: these fixed links select its personality by argv[0].
+SPRIG_PERSONALITIES=(buzz-acp buzz-agent buzz-dev-mcp)
 # Binaries that must already be installed (the service and migrations need
 # them); others may be installed for the first time.
 REQUIRED=(buzz-relay buzz-admin)
@@ -170,6 +174,24 @@ point_links() {
   done
 }
 
+# Keep sprig's personality links pointing at the rotating sprig link.
+ensure_sprig_links() {
+  local p
+  [[ -e "$INSTALL_DIR/sprig" ]] || return 0
+  for p in "${SPRIG_PERSONALITIES[@]}"; do swap_link sprig "$INSTALL_DIR/$p"; done
+}
+
+# Restart agent units that are running, so they pick up the current sprig.
+# Best-effort: an agent failing to restart must not fail a relay upgrade.
+restart_agents() {
+  local units
+  units="$(systemctl list-units --type=service --state=active --plain --no-legend 'buzz-agent@*' | awk '{print $1}')"
+  [[ -n "$units" ]] || return 0
+  log "restarting agents: $(echo $units)"
+  # shellcheck disable=SC2086
+  sudo systemctl restart $units || warn "some agents failed to restart; check 'systemctl status buzz-agent@*'"
+}
+
 # load_state RUN_DIR — fill PREV and NEW_SHA from a backup run's state file.
 load_state() {
   local b v PREV_RELAY="" PREV_ADMIN=""
@@ -223,9 +245,11 @@ fall_back() {
   fi
   # Called from `... || failed`, where set -e is off: check each step.
   point_links prev
+  ensure_sprig_links
   sudo systemctl start "$SERVICE" || die "could not start $SERVICE after fallback"
   if wait_ready; then
     log "fallback complete: running $(readlink "$INSTALL_DIR/buzz-relay")"
+    restart_agents
   else
     sudo journalctl -u "$SERVICE" -n 40 --no-pager >&2 || true
     die "relay is not ready even after fallback; inspect 'journalctl -u $SERVICE'"
@@ -347,6 +371,7 @@ run_migrations "buzz-admin-$SHA" || failed "database migrations failed"
 
 # --- 6. switch + start ---------------------------------------------------------------
 point_links "$SHA"
+ensure_sprig_links
 log "starting $SERVICE"
 sudo systemctl start "$SERVICE"
 wait_ready || failed "relay did not become ready within ${READY_TIMEOUT}s"
@@ -363,6 +388,8 @@ if [[ -n "$HEALTH_PORT" ]]; then
     log "/_status confirms source_sha $served"
   fi
 fi
+
+restart_agents
 
 # --- 7. prune ------------------------------------------------------------------------
 # Old builds: keep the newest $KEEP, and never the live or previous build.
